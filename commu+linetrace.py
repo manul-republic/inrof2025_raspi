@@ -4,11 +4,10 @@ from threading import Lock
 import queue
 import time
 from struct import pack, unpack
+from picamera2 import Picamera2
+import cv2
 #from multiprocessing import Process, Lock
 #from multiprocessing.sharedctypes import Value, Array
-
-#dictでデータ管理してるけどメモリマップの方が普通にいいかもしれない
-#ただどうせformat情報が必要になるしこれでもいいんじゃね
 
 #速度： -50~50
 #ターンスピード： 10～15 chous
@@ -18,51 +17,43 @@ class SlaveUART:
         self.serial_port = serial.Serial(port, baudrate=baudrate, timeout=timeout)
         self.id = 2  # このスレーブのID
         self.bid = pack("B", self.id)
-        #self.memory = [0] * 256  # 256バイトのメモリテーブル
-        #self.memory[0x05] = self.id  # IDをメモリにセット（例）
-        #03 ff in big-endian (>)
         #ff 03 in little-endian (<)
-        # lockいる？常にこのスレッドしか使わないならデータ競合はしないよね
-        # 代わりにmemoryを守る必要がある
         self.stream_buffer = bytearray()
         self.mem_lock = Lock()
         self.memory = bytearray(256)
         self.memory[0] = 0 #pack("B", 5)
-        self.memory[1] = False #1で歩行モードに移動　0で
+        self.memory[1] = False #1で歩行モードに移動　0で停止
         self.memory[2] = False #1で励磁開始
-        self.memory[3:7] = bytearray(pack("<f", 50.0))
+        self.memory[3:7] = bytearray(pack("<f", 0.0))
         self.memory[7:11] = bytearray(pack("<f", 0.0)) #pack("B", 8)
-        #self.memory[2] = False
-        """self.memory_proto = {
-            0x00: {"data": 42, "length": 1, "format":"<B"},     #現在の制御モード uint8_t 1バイト
-            0x01: {"data": 24, "length": 1, "format":"<B"},
-            0x02: {"data": True, "length": 1, "format":"<?"},
-            0x03: {"data": 0.1, "length": 1, "format":"<f"},
-            0x07: {"data": 0.2, "length": 1, "format":"<f"},
-            0x12: {"data": 5, "length": 1, "format":"<B"},
-            0x15: {"data": True, "length": 1, "format":"<?"},
-            0x18: {"data": None, "length": 1, "format":"<B"},
-            0x21: {"data": True, "length": 1, "format":"<?"},
-            0x26: {"data": None, "length": 1, "format":"<B"},
-        }"""
+
+        self.memory_proto = {
+            0x00: {"length": 1, "format":"<B"},     #現在の制御モード uint8_t 1バイト
+            0x01: {"length": 1, "format":"<?"},     #1で歩行モードに移動　0で停止
+            0x02: {"length": 1, "format":"<?"},     #1で励磁開始
+            0x03: {"length": 4, "format":"<f"},     #x方向速度 -50~50
+            0x07: {"length": 4, "format":"<f"},     #yaw軸各速度 10～15が望ましい 低すぎると動かないらしい
+        }
 
     def _checksum(self, data):
         return (~sum(data)) & 0xFF
     
     def get_data(self, key):
         with self.mem_lock:
-            value = self.memory[key]["data"]
+            length = self.memory_proto[key]["length"]
+            value = unpack(self.memory_proto[key]["format"], self.memory[key:key+length]) 
         return value
     
     def set_data(self, key, value):
         with self.mem_lock:
-            self.memory[key]["data"] = value
+            length = self.memory_proto[key]["length"]
+            self.memory[key:key+length] = pack(self.memory_proto[key]["format"], value)
 
     def _receive_loop(self):
         while True:
             if self.serial_port.in_waiting > 0:
                 data = self.serial_port.read(self.serial_port.in_waiting)
-                print(f"[DEBUG] received: f{bytes(data).hex()}")
+                #print(f"[DEBUG] received: f{bytes(data).hex()}")
                 if len(data) > 5:
                     self._parse_packet(data)
             #time.sleep(0.002)
@@ -90,7 +81,7 @@ class SlaveUART:
                         i += 1  # ヘッダを探し進む
                 self.stream_buffer = self.stream_buffer[i:]
                 for p in packets:
-                    print(f"[DEBUG] received: f{bytes(p).hex()}")
+                    #print(f"[DEBUG] received: f{bytes(p).hex()}")
                     self._parse_packet(p)
             #time.sleep(0.002)
 
@@ -117,29 +108,16 @@ class SlaveUART:
             case 0x01: # PING
                 self._respond_status_packet(self.id) 
                 print("[INFO] PING received")
-                """if params[0] != 0x00:
-                    self._respond_status_packet(params[0])
-                    print("[INFO] PING received")
-                else:
-                    print("[INFO] PING returned")"""
 
             case 0x02:  # READ DATA
                 if len(params) < 2:
                     return
                 self._parse_read(params)
-                #addrs = self._parse_read(params)
-                #self._respond_read_data(addrs)
 
             case 0x03:  # WRITE DATA
                 if len(params) < 1:
                     return
                 self._parse_write(params)
-                #self._respond_status_packet(recv_id)
-                """addr = params[0]
-                data_bytes = params[1:]
-                print(f"[INFO] WRITE DATA received: addr={addr}, data={data_bytes}")
-                for i, b in enumerate(data_bytes):
-                    self.memory[addr + i] = b"""
             
             case 0x00:  #response or something, スレーブには通常来ない はず？
                 print(f"[DEBUG] 0x00 received: f{bytes(data).hex()}")
@@ -155,30 +133,8 @@ class SlaveUART:
         with self.mem_lock:
             addr = int(params[0])
             self.memory[addr:addr+length] = bytearray(params[1:])
-            print(f"[DEBUG] WRITE cmd received: addr: {addr}, data: {params[1:]}")
-
-    def _parse_read_old(self, params):
-        addrs = []
-        with self.mem_lock:
-            for i in range(len(params) // 2):
-                addr = int(params[i*2])
-                addrs.append(addr)
-                if self.memory[addr]["length"] != int(params[i*2+1]):
-                    raise ValueError("[ERROR] Illegal command with different data length received.")
-                print(f"[DEBUG] READ cmd received: addr: {addr}")
-        return addrs
-    
-    def _parse_write_old(self, params):
-        counter = 0
-        with self.mem_lock:
-            while counter < len(params):
-                addr = int(params[counter])
-                counter += 1
-                length = self.memory[addr]["length"]
-                data = unpack(self.memory[addr]["format"], params[counter:counter+length])[0] #return tuple
-                self.memory[addr]["data"] = data
-                print(f"[DEBUG] WRITE cmd received: addr: {addr}, data: {data}")
-                counter += length
+            #print(f"[DEBUG] WRITE cmd received: addr: {addr}, data: {params[1:]}")
+        self.send_packet(self.id, 0x00, None)
 
     def send_packet(self, id, inst, params):
         packet = bytes([0xFF, 0xFF, id])
@@ -192,7 +148,7 @@ class SlaveUART:
         checksum = self._checksum(packet[2:])
         packet += pack("B", checksum)
         self.serial_port.write(bytes(packet))
-        print(f"[SEND] STATUS: {bytes(packet).hex()}")
+        #print(f"[SEND] STATUS: {bytes(packet).hex()}")
 
     def send_status_packet(self, id):
         self.send_packet(id, 0x01, None)
@@ -200,71 +156,112 @@ class SlaveUART:
     def _respond_status_packet(self, id):
         self.send_packet(id, 0x00, None)
 
-    def _respond_read_data_old(self, addrs):
-        packet = bytearray()
-        with self.mem_lock:
-            for addr in addrs:
-                data = pack(self.memory[addr]["format"], self.memory[addr]["data"]) #return tuple
-                packet += data
-                #if not packet: packet = data
-                #else: packet += data
-        self.send_packet(self.id, 0x00, packet)
-        """data = self.memory[addr:addr+length]
-        packet = [0xFF, 0xFF, self.id, length+2, 0x00] + data
-        checksum = self._checksum(packet[2:])
-        packet += (checksum)
-        self.send_packet(self.id, 0x00, packet)"""
-
     def run(self):
         print(f"SLAVE (ID={self.id}) start")
         #threading.Thread(target=self._receive_loop, daemon=True).start()
         threading.Thread(target=self._receive_loop_stream, daemon=True).start()
 
-import cv2
+class Camera:
+    def __init__(self):
+        self.cap = cv2.VideoCapture(0)
+        self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M','J','P','G'))
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640) # 640x480
+
+        self.picam = Picamera2()
+        config = self.picam.create_still_configuration(
+            main={"format": 'RGB888', "size": (640, 480)},
+            queue=False)
+        self.picam.configure(config)
+        self.picam.set_controls({"ExposureTime": 8000, "AnalogueGain": 2.5})
+        self.picam.start()
+
+        self.lc = None
+        self.fc = None
+        self.lc_lock = Lock()
+        self.fc_lock = Lock()
+    
+    def _loop(self):
+        while True:
+            with self.fc_lock:
+                self.fc = self.picam.capture_array()
+            with self.lc_lock:
+                _, self.lc = self.cap.read()
+
+    def get_line_camera(self):
+        with self.lc_lock:
+            a = self.lc.copy()
+        return a
+    
+    def get_front_camera(self):
+        with self.fc_lock:
+            a = self.fc.copy()
+        return a
+    
+    def run(self):
+        print(f"CAMERA start")
+        threading.Thread(target=self._loop, daemon=True).start()
+
+# 普通に歩いていて
+
+class LineTracer:
+    def __init__(self, slave, camera):
+        self.camera = camera
+        self.enabled = True
+        self.lsd = cv2.createLineSegmentDetector(cv2.LSD_REFINE_STD)
+        
+    
+    def _loop(self):
+        while True:
+            img = self.camera.get_line_camera()
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            gray = cv2.GaussianBlur(gray,(3,3),0)
+            gray = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 15, 5)
+
+    def get_line_distance(self, l1, l2):
+        p = (l2[0:2] + l2[2:4]) / 2
+        ap = p - l1[0:2]
+        ab = l1[2:4] - l1[0:2]
+        ba = l1[0:2] - l1[2:4]
+        bp = p - l1[2:4]
+        ai_norm = np.dot(ap, ab)/norm(ab)
+        neighbor_point = a + (ab)/norm(ab)*ai_norm
+        return norm(p - neighbor_point)
+
+    def get_line_dir_in_window(self, window):
+        lines, width, prec, nfa = lsd.detect(window)
+    
+    def set_command_velocirty(self, x, yaw):
+        self.slave.set_data(0x03, x)
+        self.slave.set_data(0x07, yaw)
+    
+    def start_robot(self, start):
+        self.slave.set_data(0x02, start)
+
+    def walk_robot(self, start):
+        self.slave.set_data(0x01, start)
+
+    def get_window(self, src, center, size): #h, w
+        return src[center[0]-size[0]//2:center[0]-size[0]//2+size[0],
+                   center[1]-size[1]//2:center[1]-size[1]//2+size[1]]
+    
+    def set_enable(self, is_enabled):
+        self.enabled = is_enabled
+
+    def run(self):
+        print(f"LineTracer start")
+        threading.Thread(target=self._loop, daemon=True).start()
+
 
 if __name__ == "__main__":
     slave = SlaveUART(port="/dev/ttyAMA0")  # 使用するシリアルポートを指定
     slave.run()
-    time.sleep(0.1)
-    #slave.send_status_packet(0x02)
-    #slave.send_packet(0x02, 0x03, bytes([0x01, 0x22]))
-    #time.sleep(0.01)
-    #slave.send_packet(0x02, 0x03, bytes([0x02, 0x22, 0x22]))
-    #slave.send_packet(0x02, 0x03, bytes([0x01, 0x22]))
-    """slave.send_packet(0x02, 0x03, bytes([0x01, 0x22]))
-    #time.sleep(0.01)
-    slave.send_packet(0x02, 0x02, bytes([0x01, 0x01]))
-
-    #time.sleep(0.01)
-    slave.send_packet(0x02, 0x03, bytes([0x02, 0x22, 0x22]))
-    #time.sleep(0.01)
-    slave.send_packet(0x02, 0x02, bytes([0x01, 0x01, 0x02, 0x02]))
-    print(slave.get_data(0x01))
-    time.sleep(0.01)
-    print(slave.get_data(0x01))"""
-    time.sleep(0.1)
-    with slave.mem_lock:
-        slave.memory[2] = True
-    time.sleep(0.1)
-    with slave.mem_lock:
-        slave.memory[1] = True
-    """time.sleep(2)
-    with slave.mem_lock:
-        slave.memory[1] = False"""
+    cam = Camera()
+    cam.run()
+    #time.sleep(1)
+    #slave.memory[2] = True
     try:
         while True:
-            time.sleep(0.001)
-            """k = cv2.waitKey(0)
-            if k == ord('s'):
-                with slave.mem_lock:
-                    slave.memory[2] = True
-                print("hey")
-            elif k == 27:
-                with slave.mem_lock:
-                    slave.memory[2] = False"""
-
-            #slave.send_status_packet(0x02)
-            #print(slave.get_data(0x01))
+            time.sleep(0.01)
 
     except KeyboardInterrupt:
         slave.serial_port.close()

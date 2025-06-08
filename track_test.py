@@ -8,13 +8,14 @@ from picamera2 import Picamera2
 import numpy as np
 import cv2
 
-from ..lib.obj_det import ObjectDetector
+from lib.obj_det import ObjectDetector
 
 #速度： -50~50
 #ターンスピード： 10～15 chous
 
 class SlaveUART:
     def __init__(self, port, baudrate=921600, timeout=0.2):
+        self.serial_port = serial.Serial(port, baudrate=baudrate, timeout=timeout)
         self.id = 2  # このスレーブのID
         self.bid = pack("B", self.id)
         #ff 03 in little-endian (<)
@@ -158,7 +159,6 @@ class SlaveUART:
 
     def run(self):
         print(f"SLAVE (ID={self.id}) start")
-        self.serial_port = serial.Serial("COM3", baudrate=115200, timeout=0.2)
         #threading.Thread(target=self._receive_loop, daemon=True).start()
         threading.Thread(target=self._receive_loop_stream, daemon=True).start()
 
@@ -181,20 +181,20 @@ class Camera:
         self.lc_lock = Lock()
         self.fc_lock = Lock()
 
-        self.fc_k = np.array([273.0, 0, 320],
+        self.fc_k = np.array([[273.0, 0, 320],
                               [0, 363.8, 240],
-                              [0, 0, 1])
+                              [0, 0, 1]])
         self.fc_C = np.array([0, 0, 0.18])
-        self.fc_R = np.array([1, 0, 0],
+        self.fc_R = np.array([[1, 0, 0],
                               [0, 0.866, -0.5],
-                              [0, 0.5, 866])
+                              [0, 0.5, 866]])
         self.fc_kinv = np.linalg.inv(self.fc_k)
         self.fc_Rinv = np.linalg.inv(self.fc_R)
     
     def _loop(self):
         while True:
-            #with self.fc_lock:
-            #    self.fc = self.picam.capture_array()
+            with self.fc_lock:
+                self.fc = self.picam.capture_array()
             with self.lc_lock:
                 _, self.lc = self.cap.read()
                 self.lc = cv2.resize(self.lc, (640, 480))
@@ -236,37 +236,47 @@ if __name__ == "__main__":
 
     try:
         while True:
-            break
             img = cam.get_front_camera()
+            if img is not None:
+                time.sleep(0.1)
+                print("cannot aquire camera image!")
+                continue
             outputs = objdet.predict(img)
-            bboxes = outputs[:, 0:4]
-            cls = outputs[:, 6]
-            scores = outputs[:, 4] * outputs[:, 5]
-            redballs = bboxes[(cls == 1) & (scores > 0.6), 0:4]
+            if outputs is not None:
+                
+                bboxes = outputs[:, 0:4]
+                cls = outputs[:, 6]
+                scores = outputs[:, 4] * outputs[:, 5]
+                redballs = bboxes[(cls == 1) & (scores > 0.6), 0:4]
 
-            areas = np.abs(redballs[:, 2] - redballs[:, 0]) * np.abs(redballs[:, 3] - redballs[:, 1])
-            max_index = np.argmax(areas)
-            target = redballs[max_index]
-            center = [(target[0]+target[2]) /2, (target[1]+target[3]) /2]
-            print(center)
-            _, img_center = img.shape[:2]
-            
-            if abs(center[0] - img_center) > 25:
-                if (center[0] - img_center) > 0:
-                    print("turn right!!")
-                    slave.set_data(0x02, True)
-                    slave.set_data(0x03, 0.0)
-                    slave.set_data(0x07, 10)
+                areas = np.abs(redballs[:, 2] - redballs[:, 0]) * np.abs(redballs[:, 3] - redballs[:, 1])
+                #max_index = np.argmax(areas)
+                if redballs:
+                    target = redballs[0]
+                    center = [(target[0]+target[2]) /2, (target[1]+target[3]) /2]
+                    print(center)
+                    _, img_center = img.shape[:2]
+                    
+                    if abs(center[0] - img_center) > 25:
+                        if (center[0] - img_center) > 0:
+                            print("turn right!!")
+                            slave.set_data(0x02, True)
+                            slave.set_data(0x03, 0.0)
+                            slave.set_data(0x07, 10)
+                        else:
+                            print("turn left!!")
+                            slave.set_data(0x02, True)
+                            slave.set_data(0x03, 0.0)
+                            slave.set_data(0x07, -10)
+                    else:
+                        print("stop!!!")
+                        slave.set_data(0x02, False)
+                        slave.set_data(0x03, 0.0)
+                        slave.set_data(0x07, 0.0)
                 else:
-                    print("turn left!!")
-                    slave.set_data(0x02, True)
-                    slave.set_data(0x03, 0.0)
-                    slave.set_data(0x07, -10)
+                    print("there is no redball!")
             else:
-                print("stop!!!")
-                slave.set_data(0x02, False)
-                slave.set_data(0x03, 0.0)
-                slave.set_data(0x07, 0.0)
+                print("no detection acquired")
             time.sleep(0.1)
 
             print(f"object 2dpos:  {img_center}estimated 3dpos: {cam.fc_convert_2dpos_to_3d(img_center)}")

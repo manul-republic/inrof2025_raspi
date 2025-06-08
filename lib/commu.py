@@ -154,8 +154,16 @@ if __name__ == "__main__":
     slave.run()
     time.sleep(1)
     slave.memory[2] = True
+    time.sleep(1)
+    slave.memory[1] = True
+
+    import keyboard
     try:
         while True:
+            if keyboard.is_pressed('w'):
+                aileron += 0.01
+            elif keyboard.is_pressed('6'):
+
             time.sleep(0.001)
 
     except KeyboardInterrupt:

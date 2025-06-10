@@ -29,23 +29,11 @@ class USBCamera:
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
 
-        """self.picam = Picamera2()
-        config = self.picam.create_still_configuration(
-            main={"format": 'RGB888', "size": (self.width, self.height)},
-            queue=False)
-        self.picam.configure(config)
-        self.picam.set_controls({"ExposureTime": 8000, "AnalogueGain": 2.5})
-        self.picam.start()"""
-
         self.lc = np.zeros((self.height, self.width, 3), dtype=np.uint8)  # Initialize with a blank image
-        self.fc = np.zeros((self.height, self.width, 3), dtype=np.uint8)  # Initialize with a blank image
         self.lc_lock = Lock()
-        self.fc_lock = Lock()
     
     def _loop(self):
         while True:
-            """with self.fc_lock:
-                self.fc = self.picam.capture_array()"""
             with self.lc_lock:
                 _, self.lc = self.cap.read()
             time.sleep(0.01)
@@ -55,13 +43,59 @@ class USBCamera:
             a = self.lc.copy()
         return a
     
+    def run(self):
+        print(f"USB CAMERA start")
+        threading.Thread(target=self._loop, daemon=True).start()
+
+class RasPiCamera:
+    def __init__(self, width=framewidth, height=frameheight):
+        self.width = width
+        self.height = height
+
+        self.fc_k = np.array([[273.0, 0, 320],
+                              [0, 363.8, 240],
+                              [0, 0, 1]])
+        self.fc_C = np.array([0, 0, 0.18])
+        self.fc_R, _ = cv2.Rodrigues(np.array([120*np.pi/180,0,0]))
+        self.fc_kinv = np.linalg.inv(self.fc_k)
+        self.fc_Rinv = np.linalg.inv(self.fc_R)
+
+        self.picam = Picamera2()
+        config = self.picam.create_still_configuration(
+            main={"format": 'RGB888', "size": (self.width, self.height)},
+            queue=False)
+        self.picam.configure(config)
+        self.picam.set_controls({"ExposureTime": 8000, "AnalogueGain": 2.5})
+        self.picam.start()
+
+        self.fc = np.zeros((self.height, self.width, 3), dtype=np.uint8)  # Initialize with a blank image
+        self.fc_lock = Lock()
+    
+    def _loop(self):
+        while True:
+            with self.fc_lock:
+                self.fc = self.picam.capture_array()
+            time.sleep(0.01)
+    
     def get_front_camera(self):
         with self.fc_lock:
             a = self.fc.copy()
         return a
     
+    def fc_convert_2dpos_to_3d(self, point):
+        pc = np.array([point[0], point[1], 1.0])
+        x_c = self.fc_kinv @ pc
+        d_w = self.fc_Rinv @ x_c  # ワールド系での視線ベクトル
+
+        s = -self.fc_C[2] / d_w[2]            # Z=0との交点スケール
+        P = self.fc_C + s * d_w               # ワールド座標上の交点
+        delta = P - self.fc_C
+
+        angle = np.arctan2(delta[0], delta[1]) * 180 / np.pi  # XY平面上の角度（度）
+        return angle, P
+    
     def run(self):
-        print(f"CAMERA start")
+        print(f"PI CAMERA start")
         threading.Thread(target=self._loop, daemon=True).start()
 
 class LineTracer:

@@ -37,9 +37,7 @@ class PiCamera:
                               [0, 363.8, 240],
                               [0, 0, 1]])
         self.fc_C = np.array([0, 0, 0.18])
-        self.fc_R = np.array([[1, 0, 0],
-                              [0, 0.866, -0.5],
-                              [0, 0.5, 866]])
+        self.fc_R, _ = cv2.Rodrigues(np.array([120*np.pi/180,0,0]))
         self.fc_kinv = np.linalg.inv(self.fc_k)
         self.fc_Rinv = np.linalg.inv(self.fc_R)
     

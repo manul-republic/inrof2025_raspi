@@ -12,10 +12,16 @@ class SlaveUART:
         self.mem_lock = Lock()
         self.memory = bytearray(256)
         self.memory[0] = 0
-        self.memory[1] = True
+        self.memory[1] = False
         self.memory[2] = False
         self.memory[3:7] = bytearray(pack("<f", 0.0))
         self.memory[7:11] = bytearray(pack("<f", 0.0))
+        self.memory[11] = 00 #pitch2
+        self.memory[12] = 30 #pitch1
+        self.memory[13] = 30 #yaw
+        self.memory[14] = 30
+        self.memory[15:19] = bytearray(pack("<f", 0.0))
+        print(self.memory[13])
 
         self.memory_proto = {
             0x00: {"length": 1, "format": "<B"},
@@ -23,6 +29,11 @@ class SlaveUART:
             0x02: {"length": 1, "format": "<?"},
             0x03: {"length": 4, "format": "<f"},
             0x07: {"length": 4, "format": "<f"},
+            0x0b: {"length": 1, "format": "<B"},
+            0x0c: {"length": 1, "format": "<B"},
+            0x0d: {"length": 1, "format": "<B"},
+            0x0e: {"length": 1, "format": "<B"},
+            0x0f: {"length": 4, "format": "<f"},
         }
 
     def _checksum(self, data):

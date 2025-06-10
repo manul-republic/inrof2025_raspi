@@ -65,9 +65,10 @@ class USBCamera:
         threading.Thread(target=self._loop, daemon=True).start()
 
 class LineTracer:
-    def __init__(self, slave, camera, angle_threshold=3000, position_threshold=200, frame_check_count=500):
+    def __init__(self, slave, camera, angle_threshold=3000, position_threshold=200, frame_check_count=500, debug_stream_enabled=False): # Added debug_stream_enabled
         self.camera = camera
         self.slave = slave
+        self.debug_stream_enabled = debug_stream_enabled # Initialize debug_stream_enabled
 
         self.enabled = True
         self.detected_vlines = []
@@ -88,7 +89,8 @@ class LineTracer:
     
     # 横棒の数は常に監視しておく
     def _loop(self):
-        threading.Thread(target=run_webserver, daemon=True).start()
+        if self.debug_stream_enabled: # Conditional call
+            threading.Thread(target=run_webserver, daemon=True).start()
         loop_start = time.time()
         while True:
             img = self.camera.get_line_camera()
@@ -102,7 +104,7 @@ class LineTracer:
             self.detect_vertical_line(gray, debug_img)
             self.detect_horizontal_line(gray, debug_img)
             self.command()
-            if debug_img is not None:
+            if self.debug_stream_enabled and debug_img is not None: # Conditional call
                 update_debug_frame(debug_img)
 
             # デバッグ出力: ループ時間とライン数
@@ -357,7 +359,10 @@ class LineTracer:
             #print(f"[DEBUG] Adjusted target angle based on x-offset: {target_angle:.2f} degrees")
 
         angle_error = target_angle - avg_angle
-        w = kp * angle_error
+        if abs(angle_error) > 5:
+            w = kp * angle_error
+        else:
+            w = 0.0
         return w
 
     def command(self):
@@ -371,8 +376,11 @@ class LineTracer:
 
         # Adjust linear velocity (v) based on horizontal line count and magnitude of w
         if self.hlines_crossed_count <= 2:
-            max_linear_speed = 40
-            v = max_linear_speed * (1 - min(abs(w) * 0.1, 1))  # Scale v based on |w|
+            max_linear_speed = 50
+            if not(w == 0):
+                v = 0.0
+            else:
+                v = max_linear_speed
         else:
             v = 0  # Stop moving forward if horizontal line count exceeds 5
             sleep_time = 0.5
@@ -413,12 +421,15 @@ if __name__ == "__main__":
     slave.run()
     cam = USBCamera(width=320, height=240)
     cam.run()
-    lt = LineTracer(slave, cam)
+    lt = LineTracer(slave, cam, debug_stream_enabled=False) # Pass the new parameter, True by default
     lt.run()
-
     time.sleep(1)
-    slave.set_data(0x02, True)
+    #slave.set_data(0x0d, 30) #yaw
+    #slave.set_data(0x0c, 30) #pitch1
+    #slave.set_data(0x0b, 0) #pitch2
+    slave.set_data(0x01, True)
     time.sleep(1)
+    #print(slave.get_data(0x12))
     #slave.set_data(0x01, True)
     try:
         while True:

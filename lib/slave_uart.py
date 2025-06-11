@@ -16,9 +16,9 @@ class SlaveUART:
         self.memory[2] = False
         self.memory[3:7] = bytearray(pack("<f", 0.0))
         self.memory[7:11] = bytearray(pack("<f", 0.0))
-        self.memory[11] = 00 #pitch2
-        self.memory[12] = 30 #pitch1
-        self.memory[13] = 30 #yaw
+        self.memory[11] = 0 #pitch2
+        self.memory[12] = 0 #pitch1
+        self.memory[13] = 105 #yaw
         self.memory[14] = 30
         self.memory[15:19] = bytearray(pack("<f", 0.0))
         print(self.memory[13])

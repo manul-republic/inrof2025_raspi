@@ -37,9 +37,7 @@ class PiCamera:
                               [0, 363.8, 240],
                               [0, 0, 1]])
         self.fc_C = np.array([0, 0, 0.18])
-        self.fc_R = np.array([[1, 0, 0],
-                              [0, 0.866, -0.5],
-                              [0, 0.5, 866]])
+        self.fc_R,_  = cv2.Rodrigues(np.array([120*np.pi/180,0,0]))
         self.fc_kinv = np.linalg.inv(self.fc_k)
         self.fc_Rinv = np.linalg.inv(self.fc_R)
     
@@ -117,17 +115,17 @@ if __name__ == "__main__":
                     if abs(center[0] - img_center_x) > 25:
                         if (center[0] - img_center_x) > 0:
                             print("turn right!!")
-                            slave.set_data(0x02, True)
+                            slave.set_data(0x01, True)
                             slave.set_data(0x03, 0.0)
                             slave.set_data(0x07, 10)
                         else:
                             print("turn left!!")
-                            slave.set_data(0x02, True)
+                            slave.set_data(0x01, True)
                             slave.set_data(0x03, 0.0)
                             slave.set_data(0x07, -10)
                     else:
                         print("stop!!!")
-                        slave.set_data(0x02, False)
+                        slave.set_data(0x01, False)
                         slave.set_data(0x03, 0.0)
                         slave.set_data(0x07, 0.0)
                     print(f"object 2dpos:  {center}, estimated 3dpos: {cam.fc_convert_2dpos_to_3d(center)}")

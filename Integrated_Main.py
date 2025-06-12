@@ -177,11 +177,18 @@ class LineTracer:
             time.sleep(0.012)
     def detect_vertical_line(self, gray, debug_img=None):
         size = (int(self.camera.width * 0.8), 20)
-        centers = [
-            (int(self.camera.width * 1.0 // 2), int(self.camera.height * 0.1)),
-            (int(self.camera.width * 1.0 // 2), int(self.camera.height * 0.3)),
-            (int(self.camera.width * 1.0 // 2), int(self.camera.height * 0.5))
-        ]
+        if self.slave.get_data(0x00) == (2,):
+            centers = [
+                (int(self.camera.width * 1.0 // 2), int(self.camera.height * 0.9)),
+                (int(self.camera.width * 1.0 // 2), int(self.camera.height * 0.7)),
+                (int(self.camera.width * 1.0 // 2), int(self.camera.height * 0.5))
+            ]
+        else:
+            centers = [
+                (int(self.camera.width * 1.0 // 2), int(self.camera.height * 0.1)),
+                (int(self.camera.width * 1.0 // 2), int(self.camera.height * 0.3)),
+                (int(self.camera.width * 1.0 // 2), int(self.camera.height * 0.5))
+            ]
 
         line_perwindow = []
         for i, center in enumerate(centers):
@@ -393,7 +400,6 @@ class LineTracer:
         #長さが一定以上のlineだけ残す
         length = np.linalg.norm(lines[:,0,0:2]-lines[:,0,2:4])
         lines = lines[length > length_thre, :]
-        print(lines)
     
     def set_command_velocity(self, x, yaw):
         self.slave.set_data(0x03, x)
@@ -410,21 +416,13 @@ class LineTracer:
         self.enabled = is_enabled
 
     def calculate_angular_velocity(self, avg_angle, target_angle=90, kp=-1.0):
-        """
-        Calculate angular velocity (w) to adjust the average angle towards the target angle.
-
-        Parameters:
-        avg_angle (float): The current average angle in degrees.
-        target_angle (float): The desired target angle in degrees (default is 90).
-        kp (float): Proportional gain for the control system.
-
-        Returns:
-        float: Calculated angular velocity (w).
-        """
         # Adjust target angle based on the x-coordinate of the vertical line
         if self.vline_current is not None:
             x_offset = self.vline_current[0] - (framewidth / 2)  # Calculate offset from center
-            target_angle += -x_offset * 0.2  # Adjust target angle proportionally to the offset
+            if self.slave.get_data(0x00) == (2,):
+                target_angle += x_offset * 0.2  # Adjust target angle proportionally to the offset
+            else:
+                target_angle -= x_offset * 0.2
             #print(f"[DEBUG] Adjusted target angle based on x-offset: {target_angle:.2f} degrees")
 
         angle_error = target_angle - avg_angle
@@ -444,7 +442,12 @@ class LineTracer:
             #print("[DEBUG] No valid vertical line detected, setting angular velocity (w) to 0.")
 
         # Adjust linear velocity (v) based on horizontal line count and magnitude of w
-        if self.hlines_crossed_count <= 4 and self.slave.get_data(0x00) == (0,):
+        print(ballcount)
+        if ballcount == 0:
+            LineToGo = 4
+        else:
+            LineToGo = 2
+        if self.hlines_crossed_count <= LineToGo and self.slave.get_data(0x00) == (0,):
             if self.hlines_crossed_count <= 1:
                 max_linear_speed = 20
             elif self.hlines_crossed_count > 3:
@@ -456,7 +459,7 @@ class LineTracer:
             else:
                 v = max_linear_speed
         elif self.hlines_crossed_count <= 2 and self.slave.get_data(0x00) == (2,):
-            max_linear_speed = 30
+            max_linear_speed = -20
             if not(w == 0):
                 v = 0.0
             else:
@@ -493,128 +496,14 @@ if __name__ == "__main__":
     slave = SlaveUART(port="/dev/ttyAMA0")  # 使用するシリアルポートを指定
     slave.run()
     slave.set_data(0x00, 0)
-    slave.set_data(0x02, True) #servo on
     #while True:
     #    time.sleep(1)
 
-    time.sleep(2)
-    cam = USBCamera(width=320, height=240)
-    cam.run()
-    lt = LineTracer(slave, cam, debug_stream_enabled=False)
-    lt.run()
-    currentmode = slave.get_data(0x00)
-    time.sleep(1)
-    slave.set_data(0x01, True)
-    while currentmode == (0,):
-        time.sleep(0.1)
-        currentmode = slave.get_data(0x00)
-    slave.set_data(0x01, True)
-    slave.set_data(0x03, 0)
-    slave.set_data(0x07, 15)
-    time.sleep(1.0)
-    slave.set_data(0x07, 0)
-    slave.set_data(0x01, False)
-    picam = PiCamera()
-    picam.run()
-    objdet = ObjectDetector("/home/teba/Programs/inrof2025/python/lib/masters.onnx")
-    while True:
-        img = picam.get_front_camera()
-        if img is None:
-            time.sleep(0.1)
-            print("cannot aquire camera image!")
-            continue
-        outputs = objdet.predict(img)
-        print("outputs:", outputs)
-        if outputs is not None:
-            # スコアとクラス
-            bboxes = outputs[:, 0:4]
-            cls = outputs[:, 6]
-            scores = outputs[:, 4] * outputs[:, 5]
-
-            # 各クラスごとのbbox抽出
-            redballs = bboxes[(cls == 0) & (scores > 0.6)]
-            blueballs = bboxes[(cls == 1) & (scores > 0.6)]
-            yellowcans = bboxes[(cls == 2) & (scores > 0.6)]
-
-            # 面積を計算
-            def calc_areas(boxes):
-                return np.abs(boxes[:, 2] - boxes[:, 0]) * np.abs(boxes[:, 3] - boxes[:, 1])
-
-            red_areas = calc_areas(redballs)
-            blue_areas = calc_areas(blueballs)
-            yellow_areas = calc_areas(yellowcans)
-
-            # 全データ結合（bbox, area, class_id）
-            all_objects = []
-            for boxes, areas, label in [(redballs, red_areas, 0), (blueballs, blue_areas, 1), (yellowcans, yellow_areas, 2)]:
-                for i in range(len(boxes)):
-                    all_objects.append((boxes[i], areas[i], label))
-
-            # 面積最大のオブジェクトを選択
-            if all_objects:
-                max_obj = max(all_objects, key=lambda x: x[1])
-                bbox, area, label = max_obj
-                center = [(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2]
-                #print(f"最大面積オブジェクト（クラス{label}）: 2D中心={center}, 面積={area}")
-                objecttheta,objectposition = picam.fc_convert_2dpos_to_3d(center)
-                objectdist = objectposition[1]**2+objectposition[0]**2+objectposition[2]**2
-                print(f"最大面積オブジェクト（クラス{label}）: 2D中心={center}, 面積={area}, 角度={objecttheta:.2f}, 距離={objectdist:.2f}m")
-                if objectdist < 0.05:
-                    slave.set_data(0x0d, int(np.clip(-objecttheta*2/4+105,0,180)))
-                    if True:
-                        #アーム展開
-                        slave.set_data(0x0b, 40)
-                        time.sleep(0.5)
-                        slave.set_data(0x0c, 90)
-                        time.sleep(1)
-                        slave.set_data(0x0c, 180)
-                        time.sleep(0.3)
-                        slave.set_data(0x0b, 90)
-                        time.sleep(1)
-                        slave.set_data(0x0f, 0.99)
-                        time.sleep(1)
-                        slave.set_data(0x0b, 100)
-                        time.sleep(0.5)
-                        slave.set_data(0x0b, 90)
-                        time.sleep(0.5)
-                        #アーム収納
-                        slave.set_data(0x0c, 90)
-                        time.sleep(1)
-                        slave.set_data(0x0b, 40)
-                        time.sleep(0.5)
-                        slave.set_data(0x0c, 0)
-                        time.sleep(0.3)
-                        slave.set_data(0x0d, 105)
-                        slave.set_data(0x0b, 0)
-                        time.sleep(1.5)
-                        slave.set_data(0x0f, 0.7)
-                        break
-                else:              
-                    slave.set_data(0x01, True)
-                    slave.set_data(0x03, 15.0)
-                    if objectdist > 0.1:
-                        time.sleep(1)
-                    time.sleep(0.5) 
-                    slave.set_data(0x01, False)
-                    time.sleep(0.5)
-            else:
-                print("有効なオブジェクトが見つかりませんでした")
-        else:
-            print("no detection acquired")
-        time.sleep(0.1)
-
-    slave.set_data(0x01, True)
-    slave.set_data(0x03, 0)
-    slave.set_data(0x07, 15)
-    time.sleep(3.5)
-    #slave.set_data(0x01, False)
-    slave.set_data(0x00, 2)
-    currentmode = (2,)
-    while currentmode == (2,):
-        time.sleep(0.1)
-        currentmode = slave.get_data(0x00)
+    time.sleep(0.2)
+    slave.set_data(0x02, True) #servo on
+    time.sleep(3)
     slave.set_data(0x0f, 8.0)
-    slave.set_data(0x0d, 15)
+    slave.set_data(0x0d, 145)
     #アーム展開
     slave.set_data(0x0b, 40)
     time.sleep(0.5)
@@ -636,8 +525,156 @@ if __name__ == "__main__":
     time.sleep(0.3)
     slave.set_data(0x0d, 105)
     slave.set_data(0x0b, 0)
-    time.sleep(1.5)
-    
+    cam = USBCamera(width=320, height=240)
+    cam.run()
+    lt = LineTracer(slave, cam, debug_stream_enabled=False)
+    lt.run()
+    slave.set_data(0x02, True) #servo on
+    ballcount = 0
+    while True:
+        slave.set_data(0x00, 0)
+        currentmode = slave.get_data(0x00)
+        slave.set_data(0x01, True)
+        while currentmode == (0,):
+            time.sleep(0.1)
+            currentmode = slave.get_data(0x00)
+        print("linetracefinished")
+        slave.set_data(0x01, True)
+        slave.set_data(0x03, 0)
+        slave.set_data(0x07, 15)
+        time.sleep(1.0)
+        slave.set_data(0x07, 0)
+        slave.set_data(0x01, False)
+        if ballcount == 0:
+            picam = PiCamera()
+            picam.run()
+            objdet = ObjectDetector("/home/teba/Programs/inrof2025/python/lib/masters.onnx")
+        while True:
+            img = picam.get_front_camera()
+            if img is None:
+                time.sleep(0.1)
+                print("cannot aquire camera image!")
+                continue
+            outputs = objdet.predict(img)
+            print("outputs:", outputs)
+            if outputs is not None:
+                # スコアとクラス
+                bboxes = outputs[:, 0:4]
+                cls = outputs[:, 6]
+                scores = outputs[:, 4] * outputs[:, 5]
+
+                # 各クラスごとのbbox抽出
+                redballs = bboxes[(cls == 0) & (scores > 0.6)]
+                blueballs = bboxes[(cls == 1) & (scores > 0.6)]
+                yellowcans = bboxes[(cls == 3) & (scores > 0.6)]
+
+                # 面積を計算
+                def calc_areas(boxes):
+                    return np.abs(boxes[:, 2] - boxes[:, 0]) * np.abs(boxes[:, 3] - boxes[:, 1])
+
+                red_areas = calc_areas(redballs)
+                blue_areas = calc_areas(blueballs)
+                yellow_areas = calc_areas(yellowcans)
+
+                # 全データ結合（bbox, area, class_id）
+                all_objects = []
+                for boxes, areas, label in [(redballs, red_areas, 0), (blueballs, blue_areas, 1), (yellowcans, yellow_areas, 2)]:
+                    for i in range(len(boxes)):
+                        all_objects.append((boxes[i], areas[i], label))
+
+                # 面積最大のオブジェクトを選択
+                if all_objects:
+                    max_obj = max(all_objects, key=lambda x: x[1])
+                    bbox, area, label = max_obj
+                    center = [(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2]
+                    #print(f"最大面積オブジェクト（クラス{label}）: 2D中心={center}, 面積={area}")
+                    objecttheta,objectposition = picam.fc_convert_2dpos_to_3d(center)
+                    objectdist = objectposition[1]**2+objectposition[0]**2+objectposition[2]**2
+                    print(f"最大面積オブジェクト（クラス{label}）: 2D中心={center}, 面積={area}, 角度={objecttheta:.2f}, 距離={objectdist:.2f}m")
+                    if objectdist < 0.05:
+                        slave.set_data(0x0d, int(np.clip(-objecttheta*2/4+105,0,180)))
+                        if True:
+                            #アーム展開
+                            slave.set_data(0x0b, 40)
+                            time.sleep(0.5)
+                            slave.set_data(0x0c, 90)
+                            time.sleep(1)
+                            slave.set_data(0x0c, 180)
+                            time.sleep(0.3)
+                            slave.set_data(0x0b, 80)
+                            time.sleep(1)
+                            slave.set_data(0x0f, 0.99)
+                            time.sleep(1)
+                            slave.set_data(0x0b, 100)
+                            time.sleep(0.5)
+                            slave.set_data(0x0b, 90)
+                            time.sleep(0.5)
+                            #アーム収納
+                            slave.set_data(0x0c, 90)
+                            time.sleep(1)
+                            slave.set_data(0x0b, 40)
+                            time.sleep(0.5)
+                            slave.set_data(0x0c, 0)
+                            time.sleep(0.3)
+                            slave.set_data(0x0d, 105)
+                            slave.set_data(0x0b, 0)
+                            time.sleep(1.5)
+                            slave.set_data(0x0f, 0.7)
+                            break
+                    else:              
+                        slave.set_data(0x01, True)
+                        slave.set_data(0x03, 15.0)
+                        if objectdist > 0.1:
+                            time.sleep(1)
+                        time.sleep(0.5) 
+                        slave.set_data(0x01, False)
+                        time.sleep(0.5)
+                else:
+                    print("有効なオブジェクトが見つかりませんでした")
+            else:
+                print("no detection acquired")
+            time.sleep(0.1)
+
+        slave.set_data(0x01, True)
+        slave.set_data(0x03, 0)
+        slave.set_data(0x07, -15)
+        time.sleep(1.0)
+        #slave.set_data(0x01, False)
+        slave.set_data(0x00, 2)
+        currentmode = (2,)
+        while currentmode == (2,):
+            time.sleep(0.1)
+            currentmode = slave.get_data(0x00)
+        slave.set_data(0x01, True)
+        slave.set_data(0x03, -15)
+        time.sleep(1.0)
+        slave.set_data(0x01, False)
+        slave.set_data(0x0f, 8.0)
+        slave.set_data(0x0d, 195)
+        #アーム展開
+        slave.set_data(0x0b, 40)
+        time.sleep(0.5)
+        slave.set_data(0x0c, 90)
+        time.sleep(1)
+        slave.set_data(0x0f, 0.0)
+        slave.set_data(0x0c, 180)
+        time.sleep(0.3)
+        slave.set_data(0x0b, 100)
+        time.sleep(1)
+        #slave.set_data(0x0b, 105)
+        slave.set_data(0x0f, 0.0)
+        #アーム収納
+        slave.set_data(0x0c, 90)
+        time.sleep(1)
+        slave.set_data(0x0b, 40)
+        time.sleep(0.5)
+        slave.set_data(0x0c, 0)
+        time.sleep(0.3)
+        slave.set_data(0x0d, 105)
+        slave.set_data(0x0b, 0)
+        ballcount += 1
+        print(f"Ball count: {ballcount}")
+        
 
                 
                 

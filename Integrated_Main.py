@@ -127,7 +127,7 @@ class USBCamera:
         threading.Thread(target=self._loop, daemon=True).start()
 
 class LineTracer:
-    def __init__(self, slave, camera, angle_threshold=3000, position_threshold=100, frame_check_count=15, debug_stream_enabled=False): # Added debug_stream_enabled
+    def __init__(self, slave, camera, angle_threshold=3000, position_threshold=100, frame_check_count=20, debug_stream_enabled=False): # Added debug_stream_enabled
         self.camera = camera
         self.slave = slave
         self.debug_stream_enabled = debug_stream_enabled # Initialize debug_stream_enabled
@@ -268,10 +268,17 @@ class LineTracer:
 
     
     def detect_horizontal_line(self, gray, debug_img=None):
-        size = (20, int(self.camera.height * 0.8))
+        currentmode = self.slave.get_data(0x00)
+        if currentmode == (0,):
+            centerheight = self.camera.height // 4
+        elif currentmode == (2,) and self.hlines_crossed_count == 0:
+            centerheight = self.camera.height * 3 // 4
+        else:
+            centerheight = self.camera.height // 4
+        size = (20, int(self.camera.height * 0.5))
         centers = [
-            (int(self.camera.width * 0.3), self.camera.height // 2),
-            (int(self.camera.width * 0.7), self.camera.height // 2)
+            (int(self.camera.width * 0.35), centerheight),
+            (int(self.camera.width * 0.65), centerheight)
         ]
         est = []
         detected = False
@@ -421,7 +428,7 @@ class LineTracer:
             #print(f"[DEBUG] Adjusted target angle based on x-offset: {target_angle:.2f} degrees")
 
         angle_error = target_angle - avg_angle
-        if abs(angle_error) > 10:
+        if abs(angle_error) > 7:
             w = kp * angle_error
         else:
             w = 0.0
@@ -437,14 +444,27 @@ class LineTracer:
             #print("[DEBUG] No valid vertical line detected, setting angular velocity (w) to 0.")
 
         # Adjust linear velocity (v) based on horizontal line count and magnitude of w
-        if self.hlines_crossed_count <= 4:
-            max_linear_speed = 35
+        if self.hlines_crossed_count <= 4 and self.slave.get_data(0x00) == (0,):
+            if self.hlines_crossed_count <= 1:
+                max_linear_speed = 20
+            elif self.hlines_crossed_count > 3:
+                max_linear_speed = 30
+            else:
+                max_linear_speed = 40
+            if not(w == 0):
+                v = 0.0
+            else:
+                v = max_linear_speed
+        elif self.hlines_crossed_count <= 2 and self.slave.get_data(0x00) == (2,):
+            max_linear_speed = 30
             if not(w == 0):
                 v = 0.0
             else:
                 v = max_linear_speed
         else:
             v = 0  # Stop moving forward if horizontal line count exceeds 5
+            self.slave.set_data(0x01, False)
+            self.set_command_velocity(0, 0)
             sleep_time = 0.5
             print(f"[DEBUG] Horizontal line count exceeded, stopping forward movement. Waiting for {sleep_time:.2f} seconds.")
             time.sleep(sleep_time)
@@ -454,6 +474,7 @@ class LineTracer:
             while currentmode == (1,):
                 time.sleep(1)
                 currentmode = self.slave.get_data(0x00)
+            self.hlines_crossed_count = 0
             
 
         #print(f"[DEBUG] Linear velocity (v): {v:.2f}, Angular velocity (w): {w:.2f}")
@@ -472,45 +493,26 @@ if __name__ == "__main__":
     slave = SlaveUART(port="/dev/ttyAMA0")  # 使用するシリアルポートを指定
     slave.run()
     slave.set_data(0x00, 0)
+    slave.set_data(0x02, True) #servo on
+    #while True:
+    #    time.sleep(1)
 
     time.sleep(2)
-    #アーム展開
-    slave.set_data(0x0b, int(np.clip(40,0,180)))
-    time.sleep(1)
-    slave.set_data(0x0c, int(np.clip(90,0,180)))
-    time.sleep(1)
-    slave.set_data(0x0b, int(np.clip(80,0,180)))
-    time.sleep(1)
-    slave.set_data(0x0c, int(np.clip(180,0,180)))
-    time.sleep(3)
-    #アーム収納
-    slave.set_data(0x0c, int(np.clip(90,0,180)))
-    time.sleep(1)
-    slave.set_data(0x0b, int(np.clip(40,0,180)))
-    time.sleep(1)
-    slave.set_data(0x0c, int(np.clip(0,0,180)))
-    time.sleep(1)
-    slave.set_data(0x0b, int(np.clip(0,0,180)))
-    while True:
-        time.sleep(1)
-    while True:
-        time.sleep(1)
     cam = USBCamera(width=320, height=240)
     cam.run()
-    lt = LineTracer(slave, cam, debug_stream_enabled=False) # Pass the new parameter, True by default
+    lt = LineTracer(slave, cam, debug_stream_enabled=False)
     lt.run()
     currentmode = slave.get_data(0x00)
     time.sleep(1)
-    slave.set_data(0x02, True)
     slave.set_data(0x01, True)
     while currentmode == (0,):
-        time.sleep(1)
+        time.sleep(0.1)
         currentmode = slave.get_data(0x00)
-        #print(currentmode)
     slave.set_data(0x01, True)
-    slave.set_data(0x03, -10.0)
+    slave.set_data(0x03, 0)
+    slave.set_data(0x07, 15)
+    time.sleep(1.0)
     slave.set_data(0x07, 0)
-    time.sleep(2)
     slave.set_data(0x01, False)
     picam = PiCamera()
     picam.run()
@@ -553,27 +555,93 @@ if __name__ == "__main__":
                 max_obj = max(all_objects, key=lambda x: x[1])
                 bbox, area, label = max_obj
                 center = [(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2]
-                print(f"最大面積オブジェクト（クラス{label}）: 2D中心={center}, 面積={area}")
-                objecttheta,_ = picam.fc_convert_2dpos_to_3d(center)
-                slave.set_data(0x0d, int(np.clip(-0.3*objecttheta+30,0,81)))
-                time.sleep(1)
-                slave.set_data(0x0b, int(np.clip(30*0.3+30,0,81)))
-                time.sleep(1)
-                slave.set_data(0x0c, int(np.clip(90+30,0,81)))
-                time.sleep(1)
-                slave.set_data(0x0b, int(np.clip(70*0.3+30,0,81)))
-                time.sleep(1)
-                slave.set_data(0x0c, int(np.clip(180+30,0,81)))
-                
-                print(f"推定3D位置: {picam.fc_convert_2dpos_to_3d(center)}")
-
-                break
-
+                #print(f"最大面積オブジェクト（クラス{label}）: 2D中心={center}, 面積={area}")
+                objecttheta,objectposition = picam.fc_convert_2dpos_to_3d(center)
+                objectdist = objectposition[1]**2+objectposition[0]**2+objectposition[2]**2
+                print(f"最大面積オブジェクト（クラス{label}）: 2D中心={center}, 面積={area}, 角度={objecttheta:.2f}, 距離={objectdist:.2f}m")
+                if objectdist < 0.05:
+                    slave.set_data(0x0d, int(np.clip(-objecttheta*2/4+105,0,180)))
+                    if True:
+                        #アーム展開
+                        slave.set_data(0x0b, 40)
+                        time.sleep(0.5)
+                        slave.set_data(0x0c, 90)
+                        time.sleep(1)
+                        slave.set_data(0x0c, 180)
+                        time.sleep(0.3)
+                        slave.set_data(0x0b, 90)
+                        time.sleep(1)
+                        slave.set_data(0x0f, 0.99)
+                        time.sleep(1)
+                        slave.set_data(0x0b, 100)
+                        time.sleep(0.5)
+                        slave.set_data(0x0b, 90)
+                        time.sleep(0.5)
+                        #アーム収納
+                        slave.set_data(0x0c, 90)
+                        time.sleep(1)
+                        slave.set_data(0x0b, 40)
+                        time.sleep(0.5)
+                        slave.set_data(0x0c, 0)
+                        time.sleep(0.3)
+                        slave.set_data(0x0d, 105)
+                        slave.set_data(0x0b, 0)
+                        time.sleep(1.5)
+                        slave.set_data(0x0f, 0.7)
+                        break
+                else:              
+                    slave.set_data(0x01, True)
+                    slave.set_data(0x03, 15.0)
+                    if objectdist > 0.1:
+                        time.sleep(1)
+                    time.sleep(0.5) 
+                    slave.set_data(0x01, False)
+                    time.sleep(0.5)
             else:
                 print("有効なオブジェクトが見つかりませんでした")
         else:
             print("no detection acquired")
         time.sleep(0.1)
+
+    slave.set_data(0x01, True)
+    slave.set_data(0x03, 0)
+    slave.set_data(0x07, 15)
+    time.sleep(3.5)
+    #slave.set_data(0x01, False)
+    slave.set_data(0x00, 2)
+    currentmode = (2,)
+    while currentmode == (2,):
+        time.sleep(0.1)
+        currentmode = slave.get_data(0x00)
+    slave.set_data(0x0f, 8.0)
+    slave.set_data(0x0d, 15)
+    #アーム展開
+    slave.set_data(0x0b, 40)
+    time.sleep(0.5)
+    slave.set_data(0x0c, 90)
+    time.sleep(1)
+    slave.set_data(0x0f, 0.0)
+    slave.set_data(0x0c, 180)
+    time.sleep(0.3)
+    slave.set_data(0x0b, 100)
+    time.sleep(1)
+    #slave.set_data(0x0b, 105)
+    slave.set_data(0x0f, 0.0)
+    #アーム収納
+    slave.set_data(0x0c, 90)
+    time.sleep(1)
+    slave.set_data(0x0b, 40)
+    time.sleep(0.5)
+    slave.set_data(0x0c, 0)
+    time.sleep(0.3)
+    slave.set_data(0x0d, 105)
+    slave.set_data(0x0b, 0)
+    time.sleep(1.5)
+    
+
+                
+                
+
             
     
     #slave.set_data(0x0d, 30) #yaw

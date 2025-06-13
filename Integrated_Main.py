@@ -511,6 +511,15 @@ class LineTracer:
 if __name__ == "__main__":
     #threading.Thread(target=run_webserver, daemon=True).start()
     slave = SlaveUART(port="/dev/ttyAMA0")  # 使用するシリアルポートを指定
+
+    def walk_backward(length):
+        if length > 0:
+            slave.set_data(WALK_ENABLE, True)
+            slave.set_data(OBJ_SPEED, -15)
+            time.sleep(length / 15.0)
+            slave.set_data(WALK_ENABLE, False)
+            time.sleep(0.5)
+
     slave.run()
     slave.set_data(0x00, 0)
     #while True:
@@ -557,6 +566,7 @@ if __name__ == "__main__":
             time.sleep(0.1)
             currentmode = slave.get_data(0x00)
         print("linetracefinished")
+        proceed_length = 0
         slave.set_data(WALK_ENABLE, True)
         slave.set_data(OBJ_SPEED, 0)
         slave.set_data(TURN_OBJ_SPEED, 15)
@@ -568,7 +578,6 @@ if __name__ == "__main__":
             picam = PiCamera()
             picam.run()
             objdet = ObjectDetector("/home/teba/Programs/inrof2025/python/lib/masters.onnx")
-        proceed_length = 0
         while True:
             img = picam.get_front_camera()
             if img is None:
@@ -657,11 +666,8 @@ if __name__ == "__main__":
                 print("no detection acquired")
             time.sleep(0.1)
 
-        slave.set_data(WALK_ENABLE, True)
-        slave.set_data(OBJ_SPEED, -15)
-        time.sleep(proceed_length / 15.0)
-        slave.set_data(WALK_ENABLE, False)
-        time.sleep(0.5)
+        walk_backward(proceed_length)
+        proceed_length = 0
         slave.set_data(WALK_ENABLE, True)
         slave.set_data(OBJ_SPEED, 0)
         slave.set_data(TURN_OBJ_SPEED, -15)

@@ -685,10 +685,7 @@ if __name__ == "__main__":
         while currentmode == (2,):
             time.sleep(0.1)
             currentmode = slave.get_data(0x00)
-        slave.set_data(WALK_ENABLE, True)
-        slave.set_data(OBJ_SPEED, -15)
-        time.sleep(1.0)
-        slave.set_data(WALK_ENABLE, False)
+        walk(-15)
         slave.set_data(SUCTION_REF, 8.0)
         slave.set_data(ARM_PITCH2_ANGLE, 195)
         #アーム展開

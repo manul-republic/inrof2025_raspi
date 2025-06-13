@@ -528,6 +528,22 @@ if __name__ == "__main__":
         time.sleep(0.5)
         return length
 
+    def turn(angle, omega=15):
+        if angle == 0:
+            return 0
+        elif angle > 0:
+            omega = abs(omega)
+        if angle < 0:
+            omega = -abs(omega)
+        slave.set_data(WALK_ENABLE, True)
+        slave.set_data(OBJ_SPEED, 0)
+        slave.set_data(TURN_OBJ_SPEED, omega)
+        time.sleep(angle / omega)
+        slave.set_data(TURN_OBJ_SPEED, 0)
+        slave.set_data(WALK_ENABLE, False)
+        time.sleep(0.5)
+        return angle
+
     slave.run()
     # slave.set_data(0x00, 0)
     
@@ -578,12 +594,8 @@ if __name__ == "__main__":
             currentmode = slave.get_data(0x00)
         print("linetracefinished")
         proceed_length = 0
-        slave.set_data(WALK_ENABLE, True)
-        slave.set_data(OBJ_SPEED, 0)
-        slave.set_data(TURN_OBJ_SPEED, 15)
-        time.sleep(1.0)
-        slave.set_data(TURN_OBJ_SPEED, 0)
-        slave.set_data(WALK_ENABLE, False)
+        turn_angle = 0
+        turn_angle += turn(15)
         while True:
             img = picam.get_front_camera()
             if img is None:
@@ -656,16 +668,8 @@ if __name__ == "__main__":
                             time.sleep(1.5)
                             slave.set_data(SUCTION_REF, 0.7)
                             break
-                    else:              
-                        slave.set_data(WALK_ENABLE, True)
-                        slave.set_data(OBJ_SPEED, 15.0)
-                        if objectdist > 0.1:
-                            time.sleep(1)
-                            proceed_length += 15 * 1.0
-                        time.sleep(0.5) 
-                        proceed_length += 15 * 0.5
-                        slave.set_data(WALK_ENABLE, False)
-                        time.sleep(0.5)
+                    else:
+                        proceed_length += walk(22.5 if objectdist > 0.1 else 15.0)
                 else:
                     print("有効なオブジェクトが見つかりませんでした")
             else:
@@ -673,11 +677,9 @@ if __name__ == "__main__":
             time.sleep(0.1)
 
         proceed_length += walk(-proceed_length)
-        slave.set_data(WALK_ENABLE, True)
-        slave.set_data(OBJ_SPEED, 0)
-        slave.set_data(TURN_OBJ_SPEED, -15)
-        time.sleep(1.0)
+        turn_angle += turn(-turn_angle)
         #slave.set_data(WALK_ENABLE, False)
+        slave.set_data(WALK_ENABLE, True)
         slave.set_data(0x00, 2)
         currentmode = (2,)
         while currentmode == (2,):

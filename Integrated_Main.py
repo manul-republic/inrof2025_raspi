@@ -453,7 +453,7 @@ class LineTracer:
             #print("[DEBUG] No valid vertical line detected, setting angular velocity (w) to 0.")
 
         # Adjust linear velocity (v) based on horizontal line count and magnitude of w
-        print(ballcount)
+        # print(ballcount)
         if ballcount == 0:
             LineToGo = 4
         else:
@@ -529,9 +529,17 @@ if __name__ == "__main__":
         return length
 
     slave.run()
-    slave.set_data(0x00, 0)
-    #while True:
-    #    time.sleep(1)
+    # slave.set_data(0x00, 0)
+    
+    ballcount = 0
+
+    cam = USBCamera(width=320, height=240)
+    cam.run()
+    picam = PiCamera()
+    picam.run()
+    objdet = ObjectDetector("/home/teba/Programs/inrof2025/python/lib/masters.onnx")
+    lt = LineTracer(slave, cam, debug_stream_enabled=False)
+    lt.run()
 
     time.sleep(0.2)
     slave.set_data(SERVO_ENABLE, True) #servo on
@@ -559,14 +567,9 @@ if __name__ == "__main__":
     time.sleep(0.3)
     slave.set_data(ARM_PITCH2_ANGLE, 105)
     slave.set_data(ARM_YAW_ANGLE, 0)
-    cam = USBCamera(width=320, height=240)
-    cam.run()
-    lt = LineTracer(slave, cam, debug_stream_enabled=False)
-    lt.run()
-    slave.set_data(SERVO_ENABLE, True) #servo on
-    ballcount = 0
-    picam_initialized = False
+
     while True:
+        # continue
         slave.set_data(0x00, 0)
         currentmode = slave.get_data(0x00)
         slave.set_data(WALK_ENABLE, True)
@@ -581,11 +584,6 @@ if __name__ == "__main__":
         time.sleep(1.0)
         slave.set_data(TURN_OBJ_SPEED, 0)
         slave.set_data(WALK_ENABLE, False)
-        if not picam_initialized:
-            picam_initialized = True
-            picam = PiCamera()
-            picam.run()
-            objdet = ObjectDetector("/home/teba/Programs/inrof2025/python/lib/masters.onnx")
         while True:
             img = picam.get_front_camera()
             if img is None:

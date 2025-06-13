@@ -677,6 +677,7 @@ if __name__ == "__main__":
                                     break
                             else:
                                 proceed_length += walk(22.5 if objectdist > 0.1 else 15.0)
+                                error_count += 1
                         else:
                             print("有効なオブジェクトが見つかりませんでした")
                             error_count += 1

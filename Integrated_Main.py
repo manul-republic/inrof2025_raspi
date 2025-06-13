@@ -138,7 +138,17 @@ class USBCamera:
         threading.Thread(target=self._loop, daemon=True).start()
 
 class LineTracer:
-    def __init__(self, slave, camera, angle_threshold=3000, position_threshold=100, frame_check_count=20, debug_stream_enabled=False): # Added debug_stream_enabled
+    def __init__(
+        self, slave, camera, 
+        angle_threshold=3000, 
+        position_threshold=100, 
+        frame_check_count=20, 
+        debug_stream_enabled=False,
+        mode="forward",
+        end_condition="hline_count",
+        start_hline_count=0,
+        end_hline_count=5,
+        end_time=1.0): # Added debug_stream_enabled
         self.camera = camera
         self.slave = slave
         self.debug_stream_enabled = debug_stream_enabled # Initialize debug_stream_enabled
@@ -159,12 +169,22 @@ class LineTracer:
         self.behavior = "goahead" #goahead, turn, stop
 
         self.lsd = cv2.createLineSegmentDetector(cv2.LSD_REFINE_STD)
+
+        self.mode = mode
+        self.end_condition = end_condition
+        self.start_hline_count = start_hline_count
+        self.end_hilne_count = end_hline_count
+        self.end_time = end_time
+        self.end = False
+        self.walk_stopped = False
+        self.proceeding = False
     
     # 横棒の数は常に監視しておく
     def _loop(self):
         if self.debug_stream_enabled: # Conditional call
             threading.Thread(target=run_webserver, daemon=True).start()
         loop_start = time.time()
+        proceed_time = 0.0
         while True:
             img = self.camera.get_line_camera()
             #debug_img = None
@@ -181,14 +201,26 @@ class LineTracer:
                 update_debug_frame(debug_img)
 
             # デバッグ出力: ループ時間とライン数
+            if self.proceeding:
+                proceed_time += (time.time() - loop_start) * 1000  # ms
             loop_time = (time.time() - loop_start) * 1000  # ms
             loop_start = time.time()
             #これまでにIDを取得した横棒の数
 
+            if (self.end_condition == "time" and proceed_time >= self.end_time):
+                self.end = True
+            elif (self.end_condition == "hline_count" and self.hlines_crossed_count >= abs(self.end_hilne_count - self.start_hline_count)):
+                self.end = True
+            
+            if self.walk_stopped:
+                break
+            
             time.sleep(0.012)
+
     def detect_vertical_line(self, gray, debug_img=None):
         size = (int(self.camera.width * 0.8), 20)
-        if self.slave.get_data(0x00) == (2,):
+        # if self.slave.get_data(0x00) == (2,):
+        if self.mode == "backward":
             centers = [
                 (int(self.camera.width * 1.0 // 2), int(self.camera.height * 0.9)),
                 (int(self.camera.width * 1.0 // 2), int(self.camera.height * 0.7)),
@@ -286,10 +318,12 @@ class LineTracer:
 
     
     def detect_horizontal_line(self, gray, debug_img=None):
-        currentmode = self.slave.get_data(0x00)
-        if currentmode == (0,):
+        # currentmode = self.slave.get_data(0x00)
+        # if currentmode == (0,):
+        if self.mode == "forward":
             centerheight = self.camera.height // 4
-        elif currentmode == (2,) and self.hlines_crossed_count == 0:
+        # elif currentmode == (2,) and self.hlines_crossed_count == 0:
+        elif self.mode == "backward" and self.hlines_crossed_count == 0:
             centerheight = self.camera.height * 3 // 4
         else:
             centerheight = self.camera.height // 4
@@ -430,7 +464,8 @@ class LineTracer:
         # Adjust target angle based on the x-coordinate of the vertical line
         if self.vline_current is not None:
             x_offset = self.vline_current[0] - (framewidth / 2)  # Calculate offset from center
-            if self.slave.get_data(0x00) == (2,):
+            # if self.slave.get_data(0x00) == (2,):
+            if self.mode == "backward":
                 target_angle += x_offset * 0.2  # Adjust target angle proportionally to the offset
             else:
                 target_angle -= x_offset * 0.2
@@ -454,28 +489,42 @@ class LineTracer:
 
         # Adjust linear velocity (v) based on horizontal line count and magnitude of w
         # print(ballcount)
-        if ballcount == 0:
-            LineToGo = 4
-        else:
-            LineToGo = 2
-        if self.hlines_crossed_count <= LineToGo and self.slave.get_data(0x00) == (0,):
-            if self.hlines_crossed_count <= 1:
-                max_linear_speed = 20
-            elif self.hlines_crossed_count > 3:
-                max_linear_speed = 30
-            else:
-                max_linear_speed = 40
+        # if ballcount == 0:
+        #     LineToGo = 4
+        # else:
+        #     LineToGo = 2
+        # if self.hlines_crossed_count <= LineToGo and self.slave.get_data(0x00) == (0,):
+        #     if self.hlines_crossed_count <= 1:
+        #         max_linear_speed = 20
+        #     elif self.hlines_crossed_count > 3:
+        #         max_linear_speed = 30
+        #     else:
+        #         max_linear_speed = 40
+        #     if not(w == 0):
+        #         v = 0.0
+        #     else:
+        #         v = max_linear_speed
+        # elif self.hlines_crossed_count <= 2 and self.slave.get_data(0x00) == (2,):
+        #     max_linear_speed = -20
+        #     if not(w == 0):
+        #         v = 0.0
+        #     else:
+        #         v = max_linear_speed
+        if self.mode == "forward":
+            max_linear_speed = 20
             if not(w == 0):
                 v = 0.0
             else:
                 v = max_linear_speed
-        elif self.hlines_crossed_count <= 2 and self.slave.get_data(0x00) == (2,):
+        elif self.mode == "backward":
             max_linear_speed = -20
             if not(w == 0):
                 v = 0.0
             else:
                 v = max_linear_speed
-        else:
+        self.proceeding = (v != 0)
+
+        if self.end:
             v = 0  # Stop moving forward if horizontal line count exceeds 5
             self.slave.set_data(WALK_ENABLE, False)
             self.set_command_velocity(0, 0)
@@ -483,12 +532,13 @@ class LineTracer:
             print(f"[DEBUG] Horizontal line count exceeded, stopping forward movement. Waiting for {sleep_time:.2f} seconds.")
             time.sleep(sleep_time)
             self.slave.set_data(WALK_ENABLE, False)
-            self.slave.set_data(0x00, 1)
-            currentmode = (1,)
-            while currentmode == (1,):
-                time.sleep(1)
-                currentmode = self.slave.get_data(0x00)
-            self.hlines_crossed_count = 0
+            # self.slave.set_data(0x00, 1)
+            # currentmode = (1,)
+            # while currentmode == (1,):
+            #     time.sleep(1)
+            #     currentmode = self.slave.get_data(0x00)
+            # self.hlines_crossed_count = 0
+            self.walk_stopped = True
             
 
         #print(f"[DEBUG] Linear velocity (v): {v:.2f}, Angular velocity (w): {w:.2f}")
@@ -555,8 +605,8 @@ if __name__ == "__main__":
     picam = PiCamera()
     picam.run()
     objdet = ObjectDetector("/home/teba/Programs/inrof2025/python/lib/masters.onnx")
-    lt = LineTracer(slave, cam, debug_stream_enabled=False)
-    lt.run()
+    # lt = LineTracer(slave, cam, debug_stream_enabled=False)
+    # lt.run()
 
     time.sleep(0.2)
     slave.set_data(SERVO_ENABLE, True) #servo on
@@ -587,12 +637,19 @@ if __name__ == "__main__":
 
     while True:
         # continue
-        slave.set_data(0x00, 0)
-        currentmode = slave.get_data(0x00)
+        # slave.set_data(0x00, 0)
+        # currentmode = slave.get_data(0x00)
+        # slave.set_data(WALK_ENABLE, True)
+        # while currentmode == (0,):
+        #     time.sleep(0.1)
+        #     currentmode = slave.get_data(0x00)
         slave.set_data(WALK_ENABLE, True)
-        while currentmode == (0,):
-            time.sleep(0.1)
-            currentmode = slave.get_data(0x00)
+        lt = LineTracer(
+            slave, cam, debug_stream_enabled=False, 
+            mode="forward", end_condition="hline_count", 
+            start_hline_count=(0 if ballcount == 0 else 2), 
+            end_hline_count=5)
+        lt.run()
         print("linetracefinished")
         walk(searched_length)
         while True:
@@ -695,15 +752,26 @@ if __name__ == "__main__":
             if valid_object_found:
                 break
             else:
-                searched_length += walk(15)
+                lt = LineTracer(
+                    slave, cam, debug_stream_enabled=False, 
+                    mode="forward", end_condition="time", 
+                    end_time=1.0)
+                lt.run()
+                searched_length += 20
                 continue
-        #slave.set_data(WALK_ENABLE, False)
+        # slave.set_data(WALK_ENABLE, True)
+        # slave.set_data(0x00, 2)
+        # currentmode = (2,)
+        # while currentmode == (2,):
+        #     time.sleep(0.1)
+        #     currentmode = slave.get_data(0x00)
         slave.set_data(WALK_ENABLE, True)
-        slave.set_data(0x00, 2)
-        currentmode = (2,)
-        while currentmode == (2,):
-            time.sleep(0.1)
-            currentmode = slave.get_data(0x00)
+        lt = LineTracer(
+            slave, cam, debug_stream_enabled=False, 
+            mode="backward", end_condition="hline_count", 
+            start_hline_count=(5 if proceed_length == 0 else 6), 
+            end_hline_count=3)
+        lt.run()
         walk(-15)
         slave.set_data(SUCTION_REF, 8.0)
         slave.set_data(ARM_PITCH2_ANGLE, 195)

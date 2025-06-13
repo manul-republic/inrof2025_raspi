@@ -503,7 +503,7 @@ class LineTracer:
 
 # TODO
 #   色分けの反映
-#   ボールへのにじり寄りを行った場合の退却
+#   済 ボールへのにじり寄りを行った場合の退却
 #   オブジェクトが見つからなかった場合の諦め
 #   オブジェクトを探す場所の変更
 #   スタート台への帰還
@@ -568,6 +568,7 @@ if __name__ == "__main__":
             picam = PiCamera()
             picam.run()
             objdet = ObjectDetector("/home/teba/Programs/inrof2025/python/lib/masters.onnx")
+        proceed_length = 0
         while True:
             img = picam.get_front_camera()
             if img is None:
@@ -645,7 +646,9 @@ if __name__ == "__main__":
                         slave.set_data(OBJ_SPEED, 15.0)
                         if objectdist > 0.1:
                             time.sleep(1)
+                            proceed_length += 15 * 1.0
                         time.sleep(0.5) 
+                        proceed_length += 15 * 0.5
                         slave.set_data(WALK_ENABLE, False)
                         time.sleep(0.5)
                 else:
@@ -654,6 +657,11 @@ if __name__ == "__main__":
                 print("no detection acquired")
             time.sleep(0.1)
 
+        slave.set_data(WALK_ENABLE, True)
+        slave.set_data(OBJ_SPEED, -15)
+        time.sleep(proceed_length / 15.0)
+        slave.set_data(WALK_ENABLE, False)
+        time.sleep(0.5)
         slave.set_data(WALK_ENABLE, True)
         slave.set_data(OBJ_SPEED, 0)
         slave.set_data(TURN_OBJ_SPEED, -15)

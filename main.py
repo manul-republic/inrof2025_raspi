@@ -24,8 +24,11 @@ framewidth = 320
 frameheight = framewidth * 3 // 4  # 4:3のアスペクト比
 currentmode = 0
 
-# 0: 前進
-# 2: 後退
+# mode...0: 前進
+# mode 1: ラインとしない
+# mode...2: 後退
+
+# zone...0: 
 
 # TODO
 #   色分けの反映
@@ -68,12 +71,61 @@ class LineTracer:
         self.position_threshold = position_threshold  # Position difference threshold in pixels
         self.frame_check_count = frame_check_count  # Number of frames to check for line identity
 
-        self.mode = "forward" # forward, backward
         self.tasks = ["linetrace", "count_vlines"] # "linetrace", "count_vlines"
         self.behavior = "goahead" #goahead, turn, stop
+        self.mode = "forward" #forward, backward
+        self.position = 0  
+        # Position IDs
+        # 0: start
+        # 2: red_goal(line2)
+        # 3: yellow_goal(line3)
+        # 4: blue_goal(line4)
+        # 5: object_zone(line5)
 
-        self.lsd = cv2.createLineSegmentDetector(cv2.LSD_REFINE_STD)
+    def get_binary_image(self, debug=True):
+        img = self.camera.get_line_camera()
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        gray = cv2.GaussianBlur(gray,(3,3),0)
+        gray = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 15, 10)
+        debug_img = None
+        if debug:
+            debug_img = img.copy()
+        return gray, debug_img
     
+    def set_position(self, position):
+        self.position = position
+
+    async def goto(self, target_position):
+        self.detected_hlines = []  # Reset detected horizontal lines
+        self.detected_vlines = []  # Reset detected vertical lines
+        self.hlines_crossed_count = 0  # Reset horizontal line crossed count
+        self.hlines_current = {}
+
+        if target_position == self.position:
+            print(f"[DEBUG] Already at target position {target_position}. No action taken.")
+            return
+        elif target_position < self.position:
+            print(f"[DEBUG] Moving backward to position {target_position}.")
+            self.slave.set_data(CURRENT_MODE, 2)
+            self.mode = "backward"
+        else:
+            print(f"[DEBUG] Moving forward to position {target_position}.")
+            self.slave.set_data(CURRENT_MODE, 0)
+            self.mode = "forward"
+        
+        while True:
+            gray, debug_img = self.get_binary_image(debug=False)
+            self.detect_vertical_line(gray, debug_img)
+            self.detect_horizontal_line(gray, debug_img)
+            self.update()
+            if self.position == target_position:
+                print(f"[DEBUG] Reached target position {target_position}.")
+                break
+            #self.command()
+            if self.debug_stream_enabled and debug_img is not None: # Conditional call
+                update_debug_frame(debug_img)
+            await asyncio.sleep(0.02)  # Adjusted sleep time for asyncio
+
     # 横棒の数は常に監視しておく
     def _loop(self):
         if self.debug_stream_enabled: # Conditional call
@@ -198,8 +250,7 @@ class LineTracer:
         # デバッグ出力: 認識した縦線の傾きと座標
         #for line in valid_lines:
         #    print(f"[DEBUG] Vertical line detected: x={line[0]:.2f}, y={line[1]:.2f}, angle={np.degrees(line[2]):.2f} degrees")
-
-    
+ 
     def detect_horizontal_line(self, gray, debug_img=None):
         currentmode = self.slave.get_data(CURRENT_MODE)
         if currentmode == (0,):
@@ -272,9 +323,12 @@ class LineTracer:
         
         # Increment the count for uniquely recognized horizontal lines
         self.hlines_crossed_count += 1
+        if self.mode == "backward":
+            self.position -= 1
+        elif self.mode == "forward":
+            self.position += 1
         print(f"[DEBUG] Total unique horizontal lines counted: {self.hlines_crossed_count}")
-        
-        return uuid.uuid1()
+        return uuid.uuid1()        
 
     def debug_draw_line(self, lines, img):
         if img is None: return
@@ -320,12 +374,6 @@ class LineTracer:
         ai_norm = np.dot(ap, ab)/np.linalg.norm(ab)
         neighbor_point = l1[0:2] + (ab)/np.linalg.norm(ab)*ai_norm
         return np.linalg.norm(p - neighbor_point)
-
-    def get_line_dir_in_window(self, window, length_thre=25):
-        lines, width, prec, nfa = self.lsd.detect(window)
-        #長さが一定以上のlineだけ残す
-        length = np.linalg.norm(lines[:,0,0:2]-lines[:,0,2:4])
-        lines = lines[length > length_thre, :]
     
     def set_command_velocity(self, x, yaw):
         self.slave.set_data(OBJ_SPEED, x)
@@ -357,6 +405,21 @@ class LineTracer:
         else:
             w = 0.0
         return w
+    
+    def update(self):
+        if self.vline_current is not None and len(self.vline_current) == 3:
+            avg_angle_deg = np.degrees(self.vline_current[2])
+            w = self.calculate_angular_velocity(avg_angle_deg)
+        else:
+            w = 0.0
+        
+        if not(w == 0):
+            v = 0.0
+        elif self.mode == "forward":
+            v = 25.0
+        elif self.mode == "backward":
+            v = -25.0
+        self.set_command_velocity(v, w)
 
     def command(self):
         if self.vline_current is not None and len(self.vline_current) == 3:
@@ -404,7 +467,6 @@ class LineTracer:
                 time.sleep(1)
                 currentmode = self.slave.get_data(CURRENT_MODE)
             self.hlines_crossed_count = 0
-            
 
         #print(f"[DEBUG] Linear velocity (v): {v:.2f}, Angular velocity (w): {w:.2f}")
         self.set_command_velocity(v, w)
@@ -417,19 +479,21 @@ class LineTracer:
         threading.Thread(target=self._loop, daemon=True).start()
 
 
-
 import asyncio
 import time
 
 class DecisionMaker:
-    def __init__(self, slave, objdet, cam, picam, time_limit=300): #予選:300秒, 決勝:600秒
+    def __init__(self, slave, objdet, cam, picam, linetrace, time_limit=300): #予選:300秒, 決勝:600秒
         self.slave = slave
         self.objdet = objdet
         self.cam = cam
         self.picam = picam
+        self.lt = linetrace
         self.time_limit = time_limit
         self.start_time = time.time()
+
         self.ballcount = 0
+        self.search_pos = [-10, 0, 0] #advance length, turn angle, advance length
     
     def run(self):
         print("DecisionMaker start")
@@ -440,117 +504,235 @@ class DecisionMaker:
         await self.goto_object_zone()
         while True:
             object = await self.search_object()
-            match object:
-                case "red-ball":
+            match object[0]: #class id
+                case 0: # red ball
                     print("Found red ball")
-                    await self.catch_ball_or_can(object)
-                case "blue-ball":
+                    await self.catch_ball_or_can(object[1:])
+                case 1: # blue ball
                     print("Found blue ball")
-                    await self.catch_ball_or_can(object)
-                case "yellow-can":
+                    await self.catch_ball_or_can(object[1:])
+                case 3: # yellow can
                     print("Found can")
-                    await self.catch_ball_or_can(object)
+                    await self.catch_ball_or_can(object[1:])
                 case _:
                     print("No object found, searching again")
+            self.bring_object_to_goal(object[0])
+            await self.goto_object_zone()
     
     async def launch(self):
         print("launch phase: 自由ボール捨てる")
         await asyncio.sleep(0.2)
-        slave.set_data(SERVO_ENABLE, True) #servo on
+        self.slave.set_data(SERVO_ENABLE, True) #servo on
         await asyncio.sleep(3)
-        slave.set_data(SUCTION_REF, 8.0)
-        slave.set_data(ARM_PITCH2_ANGLE, 145)
+        self.slave.set_data(SUCTION_REF, 8.0)
+        self.slave.set_data(ARM_PITCH2_ANGLE, 145)
         #アーム展開
-        slave.set_data(ARM_YAW_ANGLE, 40)
+        self.slave.set_data(ARM_YAW_ANGLE, 40)
         await asyncio.sleep(0.5)
-        slave.set_data(ARM_PITCH1_ANGLE, 90)
+        self.slave.set_data(ARM_PITCH1_ANGLE, 90)
         await asyncio.sleep(1)
         # slave.set_data(SUCTION_REF, 0.0)
-        slave.set_data(ARM_PITCH1_ANGLE, 180)
+        self.slave.set_data(ARM_PITCH1_ANGLE, 180)
         await asyncio.sleep(0.3)
-        slave.set_data(ARM_YAW_ANGLE, 100)
+        self.slave.set_data(ARM_YAW_ANGLE, 100)
         await asyncio.sleep(1)
         #slave.set_data(ARM_YAW_ANGLE, 105)
-        slave.set_data(SUCTION_REF, 0.0)
+        self.slave.set_data(SUCTION_REF, 0.0)
         #アーム収納
-        slave.set_data(ARM_PITCH1_ANGLE, 90)
+        self.slave.set_data(ARM_PITCH1_ANGLE, 90)
         await asyncio.sleep(1)
-        slave.set_data(ARM_YAW_ANGLE, 40)
+        self.slave.set_data(ARM_YAW_ANGLE, 40)
         await asyncio.sleep(0.5)
-        slave.set_data(ARM_PITCH1_ANGLE, 0)
+        self.slave.set_data(ARM_PITCH1_ANGLE, 0)
         await asyncio.sleep(0.3)
-        slave.set_data(ARM_PITCH2_ANGLE, 105)
-        slave.set_data(ARM_YAW_ANGLE, 0)
+        self.slave.set_data(ARM_PITCH2_ANGLE, 105)
+        self.slave.set_data(ARM_YAW_ANGLE, 0)
     
     async def search_object(self):
-        lt = LineTracer(self.slave, self.cam, debug_stream_enabled=False)
-        lt.run()
-        await asyncio.sleep(30)
+        init_pos = self.search_pos[0]
+        await self.walk(init_pos)
+        while True:
+            self.search_pos[1] -= 30
+            await self.turn(-30)
+            obj_data = await self.recognize_object()
+            if obj_data is not None:
+                return obj_data
+            
+            self.search_pos[1] += 60
+            await self.turn(60)
+            obj_data = await self.recognize_object()
+            if obj_data is not None:
+                return obj_data
+            
+            self.search_pos[1] -= 30
+            await self.turn(-30)
+
+            self.search_pos[0] += 20
+            await self.walk(20)
+        
+    async def recognize_object(self):
+        print("recognize_object phase: オブジェクト認識")
+        img = picam.get_front_camera()
+        if img is None:
+            print("cannot aquire camera image!")
+            return None
+        
+        outputs = objdet.predict(img)
+        if outputs is not None:
+            # スコアとクラス
+            bboxes = outputs[:, 0:4]
+            cls = outputs[:, 6]
+            scores = outputs[:, 4] * outputs[:, 5]
+
+            # 各クラスごとのbbox抽出
+            redballs = bboxes[(cls == 0) & (scores > 0.6)]
+            blueballs = bboxes[(cls == 1) & (scores > 0.6)]
+            yellowcans = bboxes[(cls == 3) & (scores > 0.6)]
+
+            # 面積を計算
+            def calc_areas(boxes):
+                return np.abs(boxes[:, 2] - boxes[:, 0]) * np.abs(boxes[:, 3] - boxes[:, 1])
+
+            red_areas = calc_areas(redballs)
+            blue_areas = calc_areas(blueballs)
+            yellow_areas = calc_areas(yellowcans)
+
+            # 全データ結合（bbox, area, class_id）
+            all_objects = []
+            for boxes, areas, label in [(redballs, red_areas, 0), (blueballs, blue_areas, 1), (yellowcans, yellow_areas, 2)]:
+                for i in range(len(boxes)):
+                    all_objects.append((boxes[i], areas[i], label))
+
+            # 面積最大のオブジェクトを選択
+            if all_objects:
+                max_obj = max(all_objects, key=lambda x: x[1])
+                bbox, area, label = max_obj
+                center = [(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2]
+                bottom_center = [(bbox[0] + bbox[2]) / 2, bbox[3]]
+                #print(f"最大面積オブジェクト（クラス{label}）: 2D中心={center}, 面積={area}")
+                theta, _ = picam.fc_convert_2dpos_to_3d(center)
+                _, position = picam.fc_convert_2dpos_to_3d(bottom_center)
+                if np.linalg.norm(position) < 0.4:
+                    print(f"オブジェクト認識成功: クラス={label}, 角度={theta:.2f}, 位置={position}")
+                    return label, theta, position
+        return None
 
     async def goto_object_zone(self):
         print("goto_object_zone phase: オブジェクトゾーンへ移動")
+        await self.lt.goto(5)
+    
+    async def bring_object_to_goal(self, class_id):
+        print(f"bring_object_to_goal phase: オブジェクトをゴールへ持っていく (クラスID: {class_id})")
+        await self.walk(-self.search_pos[2])
+        await self.turn(-self.search_pos[1])
+        await self.walk(10 - self.search_pos[0])
+        self.search_pos[1] = 0; self.search_pos[2] = 0
+
+        #start linetrace
+        match class_id: #class id
+            case 0: # red ball
+                await self.lt.goto(2)
+                await self.release_ball_or_can()
+            case 1: # blue ball
+                await self.lt.goto(4)
+                await self.release_ball_or_can()
+            case 3: # yellow can
+                await self.lt.goto(3)
+                await self.release_ball_or_can()
+            case _:
+                # other object detected.
+                pass
         
-    async def walk(length, vel=15):
+    async def walk(self, length, vel=15):
         if length == 0:
             return 0
         elif length > 0:
             vel = abs(vel)
         else:
             vel = -abs(vel)
-        slave.set_data(WALK_ENABLE, True)
-        slave.set_data(OBJ_SPEED, vel)
-        slave.set_data(TURN_OBJ_SPEED, 0)
+        self.slave.set_data(WALK_ENABLE, True)
+        self.slave.set_data(OBJ_SPEED, vel)
+        self.slave.set_data(TURN_OBJ_SPEED, 0)
         await asyncio.sleep(length / vel)
-        slave.set_data(OBJ_SPEED, 0)
-        slave.set_data(WALK_ENABLE, False)
+        self.slave.set_data(OBJ_SPEED, 0)
+        self.slave.set_data(WALK_ENABLE, False)
         await asyncio.sleep(0.5)
         return length
 
-    async def turn(angle, omega=15):
+    async def turn(self, angle, omega=15):
         if angle == 0:
             return 0
         elif angle > 0:
             omega = abs(omega)
         if angle < 0:
             omega = -abs(omega)
-        slave.set_data(WALK_ENABLE, True)
-        slave.set_data(OBJ_SPEED, 0)
-        slave.set_data(TURN_OBJ_SPEED, omega)
+        self.slave.set_data(WALK_ENABLE, True)
+        self.slave.set_data(OBJ_SPEED, 0)
+        self.slave.set_data(TURN_OBJ_SPEED, omega)
         await asyncio.sleep(angle / omega)
-        slave.set_data(TURN_OBJ_SPEED, 0)
-        slave.set_data(WALK_ENABLE, False)
+        self.slave.set_data(TURN_OBJ_SPEED, 0)
+        self.slave.set_data(WALK_ENABLE, False)
         await asyncio.sleep(0.5)
         return angle
     
-    async def catch_ball_or_can(self, theta):
+    async def catch_ball_or_can(self, data):
         print("catch_ball_or_can phase: ボール・缶をキャッチ")
-        slave.set_data(ARM_PITCH2_ANGLE, int(np.clip(-theta*2/4+105,0,180)))
+        theta, position = data
+        #近くに寄るプログラム
+        self.slave.set_data(ARM_PITCH2_ANGLE, int(np.clip(-theta*2/4+105,0,180)))
         #アーム展開
-        slave.set_data(ARM_YAW_ANGLE, 40)
+        self.slave.set_data(ARM_YAW_ANGLE, 40)
         await asyncio.sleep(0.5)
-        slave.set_data(ARM_PITCH1_ANGLE, 90)
+        self.slave.set_data(ARM_PITCH1_ANGLE, 90)
         await asyncio.sleep(1)
-        slave.set_data(ARM_PITCH1_ANGLE, 180)
+        self.slave.set_data(ARM_PITCH1_ANGLE, 180)
         await asyncio.sleep(0.3)
-        slave.set_data(ARM_YAW_ANGLE, 80)
+        self.slave.set_data(ARM_YAW_ANGLE, 80)
         await asyncio.sleep(1)
-        slave.set_data(SUCTION_REF, 0.99)
+        self.slave.set_data(SUCTION_REF, 0.99)
         await asyncio.sleep(1)
-        slave.set_data(ARM_YAW_ANGLE, 100)
+        self.slave.set_data(ARM_YAW_ANGLE, 100)
         await asyncio.sleep(0.5)
-        slave.set_data(ARM_YAW_ANGLE, 90)
+        self.slave.set_data(ARM_YAW_ANGLE, 90)
         await asyncio.sleep(0.5)
         #アーム収納
-        slave.set_data(ARM_PITCH1_ANGLE, 90)
+        self.slave.set_data(ARM_PITCH1_ANGLE, 90)
         await asyncio.sleep(1)
-        slave.set_data(ARM_YAW_ANGLE, 40)
+        self.slave.set_data(ARM_YAW_ANGLE, 40)
         await asyncio.sleep(0.5)
-        slave.set_data(ARM_PITCH1_ANGLE, 0)
+        self.slave.set_data(ARM_PITCH1_ANGLE, 0)
         await asyncio.sleep(0.3)
-        slave.set_data(ARM_PITCH2_ANGLE, 105)
-        slave.set_data(ARM_YAW_ANGLE, 0)
+        self.slave.set_data(ARM_PITCH2_ANGLE, 105)
+        self.slave.set_data(ARM_YAW_ANGLE, 0)
         await asyncio.sleep(1.5)
-        slave.set_data(SUCTION_REF, 0.7)
+        self.slave.set_data(SUCTION_REF, 0.7)
+    
+    async def release_ball_or_can(self, label):
+        self.slave.set_data(WALK_ENABLE, False)
+        self.slave.set_data(SUCTION_REF, 8.0)
+        self.slave.set_data(ARM_PITCH2_ANGLE, 195)
+        #アーム展開
+        self.slave.set_data(ARM_YAW_ANGLE, 40)
+        await asyncio(0.5)
+        self.slave.set_data(ARM_PITCH1_ANGLE, 90)
+        await asyncio(1)
+        self.slave.set_data(SUCTION_REF, 0.0)
+        self.slave.set_data(ARM_PITCH1_ANGLE, 180)
+        await asyncio(0.3)
+        self.slave.set_data(ARM_YAW_ANGLE, 100)
+        await asyncio(1)
+        #slave.set_data(ARM_YAW_ANGLE, 105)
+        self.slave.set_data(SUCTION_REF, 0.0)
+        #アーム収納
+        self.slave.set_data(ARM_PITCH1_ANGLE, 90)
+        await asyncio(1)
+        self.slave.set_data(ARM_YAW_ANGLE, 40)
+        await asyncio(0.5)
+        self.slave.set_data(ARM_PITCH1_ANGLE, 0)
+        await asyncio(0.3)
+        self.slave.set_data(ARM_PITCH2_ANGLE, 105)
+        self.slave.set_data(ARM_YAW_ANGLE, 0)
+
 
 if __name__ == "__main__":
     #threading.Thread(target=run_webserver, daemon=True).start()
@@ -561,142 +743,6 @@ if __name__ == "__main__":
     picam = PiCamera()
     picam.run()
     objdet = ObjectDetector("/home/teba/Programs/inrof2025/python/lib/masters.onnx")
-    #lt = LineTracer(slave, cam, debug_stream_enabled=False)
-    #lt.run()
-    dm = DecisionMaker(slave, objdet, cam, picam, time_limit=300)
+    lt = LineTracer(slave, cam, debug_stream_enabled=False)
+    dm = DecisionMaker(slave, objdet, cam, picam, lt, time_limit=300)
     dm.run()
-    #launch()
-    """
-    while True:
-        # continue
-        slave.set_data(CURRENT_MODE, 0)
-        currentmode = slave.get_data(CURRENT_MODE)
-        slave.set_data(WALK_ENABLE, True)
-        while currentmode == (0,):
-            time.sleep(0.1)
-            currentmode = slave.get_data(CURRENT_MODE)
-        print("linetracefinished")
-        proceed_length = 0
-        turn_angle = 0
-        turn_angle += turn(15)
-        while True:
-            img = picam.get_front_camera()
-            if img is None:
-                time.sleep(0.1)
-                print("cannot aquire camera image!")
-                continue
-            outputs = objdet.predict(img)
-            print("outputs:", outputs)
-            if outputs is not None:
-                # スコアとクラス
-                bboxes = outputs[:, 0:4]
-                cls = outputs[:, 6]
-                scores = outputs[:, 4] * outputs[:, 5]
-
-                # 各クラスごとのbbox抽出
-                redballs = bboxes[(cls == 0) & (scores > 0.6)]
-                blueballs = bboxes[(cls == 1) & (scores > 0.6)]
-                yellowcans = bboxes[(cls == 3) & (scores > 0.6)]
-
-                # 面積を計算
-                def calc_areas(boxes):
-                    return np.abs(boxes[:, 2] - boxes[:, 0]) * np.abs(boxes[:, 3] - boxes[:, 1])
-
-                red_areas = calc_areas(redballs)
-                blue_areas = calc_areas(blueballs)
-                yellow_areas = calc_areas(yellowcans)
-
-                # 全データ結合（bbox, area, class_id）
-                all_objects = []
-                for boxes, areas, label in [(redballs, red_areas, 0), (blueballs, blue_areas, 1), (yellowcans, yellow_areas, 2)]:
-                    for i in range(len(boxes)):
-                        all_objects.append((boxes[i], areas[i], label))
-
-                # 面積最大のオブジェクトを選択
-                if all_objects:
-                    max_obj = max(all_objects, key=lambda x: x[1])
-                    bbox, area, label = max_obj
-                    center = [(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2]
-                    #print(f"最大面積オブジェクト（クラス{label}）: 2D中心={center}, 面積={area}")
-                    objecttheta,objectposition = picam.fc_convert_2dpos_to_3d(center)
-                    objectdist = objectposition[1]**2+objectposition[0]**2+objectposition[2]**2
-                    print(f"最大面積オブジェクト（クラス{label}）: 2D中心={center}, 面積={area}, 角度={objecttheta:.2f}, 距離={objectdist:.2f}m")
-                    if objectdist < 0.05:
-                        slave.set_data(ARM_PITCH2_ANGLE, int(np.clip(-objecttheta*2/4+105,0,180)))
-                        if True:
-                            #アーム展開
-                            slave.set_data(ARM_YAW_ANGLE, 40)
-                            time.sleep(0.5)
-                            slave.set_data(ARM_PITCH1_ANGLE, 90)
-                            time.sleep(1)
-                            slave.set_data(ARM_PITCH1_ANGLE, 180)
-                            time.sleep(0.3)
-                            slave.set_data(ARM_YAW_ANGLE, 80)
-                            time.sleep(1)
-                            slave.set_data(SUCTION_REF, 0.99)
-                            time.sleep(1)
-                            slave.set_data(ARM_YAW_ANGLE, 100)
-                            time.sleep(0.5)
-                            slave.set_data(ARM_YAW_ANGLE, 90)
-                            time.sleep(0.5)
-                            #アーム収納
-                            slave.set_data(ARM_PITCH1_ANGLE, 90)
-                            time.sleep(1)
-                            slave.set_data(ARM_YAW_ANGLE, 40)
-                            time.sleep(0.5)
-                            slave.set_data(ARM_PITCH1_ANGLE, 0)
-                            time.sleep(0.3)
-                            slave.set_data(ARM_PITCH2_ANGLE, 105)
-                            slave.set_data(ARM_YAW_ANGLE, 0)
-                            time.sleep(1.5)
-                            slave.set_data(SUCTION_REF, 0.7)
-                            break
-                    else:
-                        proceed_length += walk(22.5 if objectdist > 0.1 else 15.0)
-                else:
-                    print("有効なオブジェクトが見つかりませんでした")
-            else:
-                print("no detection acquired")
-            time.sleep(0.1)
-
-        proceed_length += walk(-proceed_length)
-        turn_angle += turn(-turn_angle)
-        #slave.set_data(WALK_ENABLE, False)
-        slave.set_data(WALK_ENABLE, True)
-        slave.set_data(CURRENT_MODE, 2)
-        currentmode = (2,)
-        while currentmode == (2,):
-            time.sleep(0.1)
-            currentmode = slave.get_data(CURRENT_MODE)
-        slave.set_data(WALK_ENABLE, True)
-        slave.set_data(OBJ_SPEED, -15)
-        time.sleep(1.0)
-        slave.set_data(WALK_ENABLE, False)
-        slave.set_data(SUCTION_REF, 8.0)
-        slave.set_data(ARM_PITCH2_ANGLE, 195)
-        #アーム展開
-        slave.set_data(ARM_YAW_ANGLE, 40)
-        time.sleep(0.5)
-        slave.set_data(ARM_PITCH1_ANGLE, 90)
-        time.sleep(1)
-        slave.set_data(SUCTION_REF, 0.0)
-        slave.set_data(ARM_PITCH1_ANGLE, 180)
-        time.sleep(0.3)
-        slave.set_data(ARM_YAW_ANGLE, 100)
-        time.sleep(1)
-        #slave.set_data(ARM_YAW_ANGLE, 105)
-        slave.set_data(SUCTION_REF, 0.0)
-        #アーム収納
-        slave.set_data(ARM_PITCH1_ANGLE, 90)
-        time.sleep(1)
-        slave.set_data(ARM_YAW_ANGLE, 40)
-        time.sleep(0.5)
-        slave.set_data(ARM_PITCH1_ANGLE, 0)
-        time.sleep(0.3)
-        slave.set_data(ARM_PITCH2_ANGLE, 105)
-        slave.set_data(ARM_YAW_ANGLE, 0)
-        ballcount += 1
-        print(f"Ball count: {ballcount}")
-        
-
-"""

@@ -245,5 +245,8 @@ def test():
     cv2.waitKey(0)
     cv2.destroyAllWindows()
 
+def main():
+    pass
+
 if __name__ == "__main__":
     test()

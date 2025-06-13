@@ -512,13 +512,21 @@ if __name__ == "__main__":
     #threading.Thread(target=run_webserver, daemon=True).start()
     slave = SlaveUART(port="/dev/ttyAMA0")  # 使用するシリアルポートを指定
 
-    def walk_backward(length):
-        if length > 0:
-            slave.set_data(WALK_ENABLE, True)
-            slave.set_data(OBJ_SPEED, -15)
-            time.sleep(length / 15.0)
-            slave.set_data(WALK_ENABLE, False)
-            time.sleep(0.5)
+    def walk(length, vel=15):
+        if length == 0:
+            return 0
+        elif length > 0:
+            vel = abs(vel)
+        else:
+            vel = -abs(vel)
+        slave.set_data(WALK_ENABLE, True)
+        slave.set_data(OBJ_SPEED, vel)
+        slave.set_data(TURN_OBJ_SPEED, 0)
+        time.sleep(length / vel)
+        slave.set_data(OBJ_SPEED, 0)
+        slave.set_data(WALK_ENABLE, False)
+        time.sleep(0.5)
+        return length
 
     slave.run()
     slave.set_data(0x00, 0)
@@ -666,8 +674,7 @@ if __name__ == "__main__":
                 print("no detection acquired")
             time.sleep(0.1)
 
-        walk_backward(proceed_length)
-        proceed_length = 0
+        proceed_length += walk(-proceed_length)
         slave.set_data(WALK_ENABLE, True)
         slave.set_data(OBJ_SPEED, 0)
         slave.set_data(TURN_OBJ_SPEED, -15)

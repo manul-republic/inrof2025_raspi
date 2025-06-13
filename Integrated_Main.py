@@ -501,6 +501,12 @@ class LineTracer:
         print(f"LineTracer start")
         threading.Thread(target=self._loop, daemon=True).start()
 
+# TODO
+#   色分けの反映
+#   ボールへのにじり寄りを行った場合の退却
+#   オブジェクトが見つからなかった場合の諦め
+#   オブジェクトを探す場所の変更
+#   スタート台への帰還
 
 if __name__ == "__main__":
     #threading.Thread(target=run_webserver, daemon=True).start()

@@ -548,6 +548,7 @@ if __name__ == "__main__":
     lt.run()
     slave.set_data(SERVO_ENABLE, True) #servo on
     ballcount = 0
+    picam_initialized = False
     while True:
         slave.set_data(0x00, 0)
         currentmode = slave.get_data(0x00)
@@ -562,7 +563,8 @@ if __name__ == "__main__":
         time.sleep(1.0)
         slave.set_data(TURN_OBJ_SPEED, 0)
         slave.set_data(WALK_ENABLE, False)
-        if ballcount == 0:
+        if not picam_initialized:
+            picam_initialized = True
             picam = PiCamera()
             picam.run()
             objdet = ObjectDetector("/home/teba/Programs/inrof2025/python/lib/masters.onnx")

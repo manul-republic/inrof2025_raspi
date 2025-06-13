@@ -526,7 +526,7 @@ if __name__ == "__main__":
     time.sleep(0.5)
     slave.set_data(ARM_PITCH1_ANGLE, 90)
     time.sleep(1)
-    slave.set_data(SUCTION_REF, 0.0)
+    # slave.set_data(SUCTION_REF, 0.0)
     slave.set_data(ARM_PITCH1_ANGLE, 180)
     time.sleep(0.3)
     slave.set_data(ARM_YAW_ANGLE, 100)

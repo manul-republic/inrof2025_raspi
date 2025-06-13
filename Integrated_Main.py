@@ -550,6 +550,8 @@ class LineTracer:
     def run(self):
         print(f"LineTracer start")
         threading.Thread(target=self._loop, daemon=True).start()
+        while not self.walk_stopped:
+            time.sleep(1)
 
 # TODO
 #   色分けの反映
@@ -572,7 +574,7 @@ if __name__ == "__main__":
         slave.set_data(WALK_ENABLE, True)
         slave.set_data(OBJ_SPEED, vel)
         slave.set_data(TURN_OBJ_SPEED, 0)
-        time.sleep(length / vel)
+        time.sleep((length / vel) if vel > 0 else (length / vel / 4))
         slave.set_data(OBJ_SPEED, 0)
         slave.set_data(WALK_ENABLE, False)
         time.sleep(0.5)
@@ -748,6 +750,7 @@ if __name__ == "__main__":
                 proceed_length += walk(-proceed_length)
                 turn_angle += turn(-turn_angle)
                 if valid_object_found:
+                    walk(60)
                     break
             if valid_object_found:
                 break
@@ -769,7 +772,7 @@ if __name__ == "__main__":
         lt = LineTracer(
             slave, cam, debug_stream_enabled=False, 
             mode="backward", end_condition="hline_count", 
-            start_hline_count=(5 if proceed_length == 0 else 6), 
+            start_hline_count=7, 
             end_hline_count=3)
         lt.run()
         walk(-15)

@@ -24,6 +24,17 @@ framewidth = 320
 frameheight = framewidth * 3 // 4  # 4:3のアスペクト比
 currentmode = 0
 
+# register map
+WALK_ENABLE = 0x01
+SERVO_ENABLE = 0x02
+OBJ_SPEED = 0x03
+TURN_OBJ_SPEED = 0x07
+ARM_YAW_ANGLE = 0x0b
+ARM_PITCH1_ANGLE = 0x0c
+ARM_PITCH2_ANGLE = 0x0d
+HAND_ANGLE = 0x0e
+SUCTION_REF = 0x0f
+
 
 class PiCamera:
     def __init__(self):
@@ -402,8 +413,8 @@ class LineTracer:
         lines = lines[length > length_thre, :]
     
     def set_command_velocity(self, x, yaw):
-        self.slave.set_data(0x03, x)
-        self.slave.set_data(0x07, yaw)
+        self.slave.set_data(OBJ_SPEED, x)
+        self.slave.set_data(TURN_OBJ_SPEED, yaw)
 
     def get_window(self, src, center, size, debug=None): #h, w
         if debug is not None:
@@ -466,12 +477,12 @@ class LineTracer:
                 v = max_linear_speed
         else:
             v = 0  # Stop moving forward if horizontal line count exceeds 5
-            self.slave.set_data(0x01, False)
+            self.slave.set_data(WALK_ENABLE, False)
             self.set_command_velocity(0, 0)
             sleep_time = 0.5
             print(f"[DEBUG] Horizontal line count exceeded, stopping forward movement. Waiting for {sleep_time:.2f} seconds.")
             time.sleep(sleep_time)
-            self.slave.set_data(0x01, False)
+            self.slave.set_data(WALK_ENABLE, False)
             self.slave.set_data(0x00, 1)
             currentmode = (1,)
             while currentmode == (1,):
@@ -500,51 +511,51 @@ if __name__ == "__main__":
     #    time.sleep(1)
 
     time.sleep(0.2)
-    slave.set_data(0x02, True) #servo on
+    slave.set_data(SERVO_ENABLE, True) #servo on
     time.sleep(3)
-    slave.set_data(0x0f, 8.0)
-    slave.set_data(0x0d, 145)
+    slave.set_data(SUCTION_REF, 8.0)
+    slave.set_data(ARM_PITCH2_ANGLE, 145)
     #アーム展開
-    slave.set_data(0x0b, 40)
+    slave.set_data(ARM_YAW_ANGLE, 40)
     time.sleep(0.5)
-    slave.set_data(0x0c, 90)
+    slave.set_data(ARM_PITCH1_ANGLE, 90)
     time.sleep(1)
-    slave.set_data(0x0f, 0.0)
-    slave.set_data(0x0c, 180)
+    slave.set_data(SUCTION_REF, 0.0)
+    slave.set_data(ARM_PITCH1_ANGLE, 180)
     time.sleep(0.3)
-    slave.set_data(0x0b, 100)
+    slave.set_data(ARM_YAW_ANGLE, 100)
     time.sleep(1)
-    #slave.set_data(0x0b, 105)
-    slave.set_data(0x0f, 0.0)
+    #slave.set_data(ARM_YAW_ANGLE, 105)
+    slave.set_data(SUCTION_REF, 0.0)
     #アーム収納
-    slave.set_data(0x0c, 90)
+    slave.set_data(ARM_PITCH1_ANGLE, 90)
     time.sleep(1)
-    slave.set_data(0x0b, 40)
+    slave.set_data(ARM_YAW_ANGLE, 40)
     time.sleep(0.5)
-    slave.set_data(0x0c, 0)
+    slave.set_data(ARM_PITCH1_ANGLE, 0)
     time.sleep(0.3)
-    slave.set_data(0x0d, 105)
-    slave.set_data(0x0b, 0)
+    slave.set_data(ARM_PITCH2_ANGLE, 105)
+    slave.set_data(ARM_YAW_ANGLE, 0)
     cam = USBCamera(width=320, height=240)
     cam.run()
     lt = LineTracer(slave, cam, debug_stream_enabled=False)
     lt.run()
-    slave.set_data(0x02, True) #servo on
+    slave.set_data(SERVO_ENABLE, True) #servo on
     ballcount = 0
     while True:
         slave.set_data(0x00, 0)
         currentmode = slave.get_data(0x00)
-        slave.set_data(0x01, True)
+        slave.set_data(WALK_ENABLE, True)
         while currentmode == (0,):
             time.sleep(0.1)
             currentmode = slave.get_data(0x00)
         print("linetracefinished")
-        slave.set_data(0x01, True)
-        slave.set_data(0x03, 0)
-        slave.set_data(0x07, 15)
+        slave.set_data(WALK_ENABLE, True)
+        slave.set_data(OBJ_SPEED, 0)
+        slave.set_data(TURN_OBJ_SPEED, 15)
         time.sleep(1.0)
-        slave.set_data(0x07, 0)
-        slave.set_data(0x01, False)
+        slave.set_data(TURN_OBJ_SPEED, 0)
+        slave.set_data(WALK_ENABLE, False)
         if ballcount == 0:
             picam = PiCamera()
             picam.run()
@@ -592,42 +603,42 @@ if __name__ == "__main__":
                     objectdist = objectposition[1]**2+objectposition[0]**2+objectposition[2]**2
                     print(f"最大面積オブジェクト（クラス{label}）: 2D中心={center}, 面積={area}, 角度={objecttheta:.2f}, 距離={objectdist:.2f}m")
                     if objectdist < 0.05:
-                        slave.set_data(0x0d, int(np.clip(-objecttheta*2/4+105,0,180)))
+                        slave.set_data(ARM_PITCH2_ANGLE, int(np.clip(-objecttheta*2/4+105,0,180)))
                         if True:
                             #アーム展開
-                            slave.set_data(0x0b, 40)
+                            slave.set_data(ARM_YAW_ANGLE, 40)
                             time.sleep(0.5)
-                            slave.set_data(0x0c, 90)
+                            slave.set_data(ARM_PITCH1_ANGLE, 90)
                             time.sleep(1)
-                            slave.set_data(0x0c, 180)
+                            slave.set_data(ARM_PITCH1_ANGLE, 180)
                             time.sleep(0.3)
-                            slave.set_data(0x0b, 80)
+                            slave.set_data(ARM_YAW_ANGLE, 80)
                             time.sleep(1)
-                            slave.set_data(0x0f, 0.99)
+                            slave.set_data(SUCTION_REF, 0.99)
                             time.sleep(1)
-                            slave.set_data(0x0b, 100)
+                            slave.set_data(ARM_YAW_ANGLE, 100)
                             time.sleep(0.5)
-                            slave.set_data(0x0b, 90)
+                            slave.set_data(ARM_YAW_ANGLE, 90)
                             time.sleep(0.5)
                             #アーム収納
-                            slave.set_data(0x0c, 90)
+                            slave.set_data(ARM_PITCH1_ANGLE, 90)
                             time.sleep(1)
-                            slave.set_data(0x0b, 40)
+                            slave.set_data(ARM_YAW_ANGLE, 40)
                             time.sleep(0.5)
-                            slave.set_data(0x0c, 0)
+                            slave.set_data(ARM_PITCH1_ANGLE, 0)
                             time.sleep(0.3)
-                            slave.set_data(0x0d, 105)
-                            slave.set_data(0x0b, 0)
+                            slave.set_data(ARM_PITCH2_ANGLE, 105)
+                            slave.set_data(ARM_YAW_ANGLE, 0)
                             time.sleep(1.5)
-                            slave.set_data(0x0f, 0.7)
+                            slave.set_data(SUCTION_REF, 0.7)
                             break
                     else:              
-                        slave.set_data(0x01, True)
-                        slave.set_data(0x03, 15.0)
+                        slave.set_data(WALK_ENABLE, True)
+                        slave.set_data(OBJ_SPEED, 15.0)
                         if objectdist > 0.1:
                             time.sleep(1)
                         time.sleep(0.5) 
-                        slave.set_data(0x01, False)
+                        slave.set_data(WALK_ENABLE, False)
                         time.sleep(0.5)
                 else:
                     print("有効なオブジェクトが見つかりませんでした")
@@ -635,43 +646,43 @@ if __name__ == "__main__":
                 print("no detection acquired")
             time.sleep(0.1)
 
-        slave.set_data(0x01, True)
-        slave.set_data(0x03, 0)
-        slave.set_data(0x07, -15)
+        slave.set_data(WALK_ENABLE, True)
+        slave.set_data(OBJ_SPEED, 0)
+        slave.set_data(TURN_OBJ_SPEED, -15)
         time.sleep(1.0)
-        #slave.set_data(0x01, False)
+        #slave.set_data(WALK_ENABLE, False)
         slave.set_data(0x00, 2)
         currentmode = (2,)
         while currentmode == (2,):
             time.sleep(0.1)
             currentmode = slave.get_data(0x00)
-        slave.set_data(0x01, True)
-        slave.set_data(0x03, -15)
+        slave.set_data(WALK_ENABLE, True)
+        slave.set_data(OBJ_SPEED, -15)
         time.sleep(1.0)
-        slave.set_data(0x01, False)
-        slave.set_data(0x0f, 8.0)
-        slave.set_data(0x0d, 195)
+        slave.set_data(WALK_ENABLE, False)
+        slave.set_data(SUCTION_REF, 8.0)
+        slave.set_data(ARM_PITCH2_ANGLE, 195)
         #アーム展開
-        slave.set_data(0x0b, 40)
+        slave.set_data(ARM_YAW_ANGLE, 40)
         time.sleep(0.5)
-        slave.set_data(0x0c, 90)
+        slave.set_data(ARM_PITCH1_ANGLE, 90)
         time.sleep(1)
-        slave.set_data(0x0f, 0.0)
-        slave.set_data(0x0c, 180)
+        slave.set_data(SUCTION_REF, 0.0)
+        slave.set_data(ARM_PITCH1_ANGLE, 180)
         time.sleep(0.3)
-        slave.set_data(0x0b, 100)
+        slave.set_data(ARM_YAW_ANGLE, 100)
         time.sleep(1)
-        #slave.set_data(0x0b, 105)
-        slave.set_data(0x0f, 0.0)
+        #slave.set_data(ARM_YAW_ANGLE, 105)
+        slave.set_data(SUCTION_REF, 0.0)
         #アーム収納
-        slave.set_data(0x0c, 90)
+        slave.set_data(ARM_PITCH1_ANGLE, 90)
         time.sleep(1)
-        slave.set_data(0x0b, 40)
+        slave.set_data(ARM_YAW_ANGLE, 40)
         time.sleep(0.5)
-        slave.set_data(0x0c, 0)
+        slave.set_data(ARM_PITCH1_ANGLE, 0)
         time.sleep(0.3)
-        slave.set_data(0x0d, 105)
-        slave.set_data(0x0b, 0)
+        slave.set_data(ARM_PITCH2_ANGLE, 105)
+        slave.set_data(ARM_YAW_ANGLE, 0)
         ballcount += 1
         print(f"Ball count: {ballcount}")
         
@@ -681,13 +692,13 @@ if __name__ == "__main__":
 
             
     
-    #slave.set_data(0x0d, 30) #yaw
-    #slave.set_data(0x0c, 30) #pitch1
-    #slave.set_data(0x0b, 0) #pitch2
-    #slave.set_data(0x01, True)
+    #slave.set_data(ARM_PITCH2_ANGLE, 30) #yaw
+    #slave.set_data(ARM_PITCH1_ANGLE, 30) #pitch1
+    #slave.set_data(ARM_YAW_ANGLE, 0) #pitch2
+    #slave.set_data(WALK_ENABLE, True)
     time.sleep(1)
     #print(slave.get_data(0x12))
-    #slave.set_data(0x01, True)
+    #slave.set_data(WALK_ENABLE, True)
     try:
         while True:
             time.sleep(0.01)

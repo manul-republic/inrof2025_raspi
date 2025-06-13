@@ -548,6 +548,7 @@ if __name__ == "__main__":
     # slave.set_data(0x00, 0)
     
     ballcount = 0
+    searched_length = 0
 
     cam = USBCamera(width=320, height=240)
     cam.run()
@@ -593,91 +594,108 @@ if __name__ == "__main__":
             time.sleep(0.1)
             currentmode = slave.get_data(0x00)
         print("linetracefinished")
-        proceed_length = 0
-        turn_angle = 0
-        turn_angle += turn(15)
+        walk(searched_length)
         while True:
-            img = picam.get_front_camera()
-            if img is None:
-                time.sleep(0.1)
-                print("cannot aquire camera image!")
-                continue
-            outputs = objdet.predict(img)
-            print("outputs:", outputs)
-            if outputs is not None:
-                # スコアとクラス
-                bboxes = outputs[:, 0:4]
-                cls = outputs[:, 6]
-                scores = outputs[:, 4] * outputs[:, 5]
+            valid_object_found = False
+            for i in range(2):
+                proceed_length = 0
+                turn_angle = 0
+                turn_angle += turn(15 if i == 0 else -15)
+                error_count = 0
+                while True:
+                    img = picam.get_front_camera()
+                    if img is None:
+                        time.sleep(0.1)
+                        print("cannot aquire camera image!")
+                        continue
+                    outputs = objdet.predict(img)
+                    print("outputs:", outputs)
+                    if outputs is not None:
+                        # スコアとクラス
+                        bboxes = outputs[:, 0:4]
+                        cls = outputs[:, 6]
+                        scores = outputs[:, 4] * outputs[:, 5]
 
-                # 各クラスごとのbbox抽出
-                redballs = bboxes[(cls == 0) & (scores > 0.6)]
-                blueballs = bboxes[(cls == 1) & (scores > 0.6)]
-                yellowcans = bboxes[(cls == 3) & (scores > 0.6)]
+                        # 各クラスごとのbbox抽出
+                        redballs = bboxes[(cls == 0) & (scores > 0.6)]
+                        blueballs = bboxes[(cls == 1) & (scores > 0.6)]
+                        yellowcans = bboxes[(cls == 3) & (scores > 0.6)]
 
-                # 面積を計算
-                def calc_areas(boxes):
-                    return np.abs(boxes[:, 2] - boxes[:, 0]) * np.abs(boxes[:, 3] - boxes[:, 1])
+                        # 面積を計算
+                        def calc_areas(boxes):
+                            return np.abs(boxes[:, 2] - boxes[:, 0]) * np.abs(boxes[:, 3] - boxes[:, 1])
 
-                red_areas = calc_areas(redballs)
-                blue_areas = calc_areas(blueballs)
-                yellow_areas = calc_areas(yellowcans)
+                        red_areas = calc_areas(redballs)
+                        blue_areas = calc_areas(blueballs)
+                        yellow_areas = calc_areas(yellowcans)
 
-                # 全データ結合（bbox, area, class_id）
-                all_objects = []
-                for boxes, areas, label in [(redballs, red_areas, 0), (blueballs, blue_areas, 1), (yellowcans, yellow_areas, 2)]:
-                    for i in range(len(boxes)):
-                        all_objects.append((boxes[i], areas[i], label))
+                        # 全データ結合（bbox, area, class_id）
+                        all_objects = []
+                        for boxes, areas, label in [(redballs, red_areas, 0), (blueballs, blue_areas, 1), (yellowcans, yellow_areas, 2)]:
+                            for i in range(len(boxes)):
+                                all_objects.append((boxes[i], areas[i], label))
 
-                # 面積最大のオブジェクトを選択
-                if all_objects:
-                    max_obj = max(all_objects, key=lambda x: x[1])
-                    bbox, area, label = max_obj
-                    center = [(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2]
-                    #print(f"最大面積オブジェクト（クラス{label}）: 2D中心={center}, 面積={area}")
-                    objecttheta,objectposition = picam.fc_convert_2dpos_to_3d(center)
-                    objectdist = objectposition[1]**2+objectposition[0]**2+objectposition[2]**2
-                    print(f"最大面積オブジェクト（クラス{label}）: 2D中心={center}, 面積={area}, 角度={objecttheta:.2f}, 距離={objectdist:.2f}m")
-                    if objectdist < 0.05:
-                        slave.set_data(ARM_PITCH2_ANGLE, int(np.clip(-objecttheta*2/4+105,0,180)))
-                        if True:
-                            #アーム展開
-                            slave.set_data(ARM_YAW_ANGLE, 40)
-                            time.sleep(0.5)
-                            slave.set_data(ARM_PITCH1_ANGLE, 90)
-                            time.sleep(1)
-                            slave.set_data(ARM_PITCH1_ANGLE, 180)
-                            time.sleep(0.3)
-                            slave.set_data(ARM_YAW_ANGLE, 80)
-                            time.sleep(1)
-                            slave.set_data(SUCTION_REF, 0.99)
-                            time.sleep(1)
-                            slave.set_data(ARM_YAW_ANGLE, 100)
-                            time.sleep(0.5)
-                            slave.set_data(ARM_YAW_ANGLE, 90)
-                            time.sleep(0.5)
-                            #アーム収納
-                            slave.set_data(ARM_PITCH1_ANGLE, 90)
-                            time.sleep(1)
-                            slave.set_data(ARM_YAW_ANGLE, 40)
-                            time.sleep(0.5)
-                            slave.set_data(ARM_PITCH1_ANGLE, 0)
-                            time.sleep(0.3)
-                            slave.set_data(ARM_PITCH2_ANGLE, 105)
-                            slave.set_data(ARM_YAW_ANGLE, 0)
-                            time.sleep(1.5)
-                            slave.set_data(SUCTION_REF, 0.7)
-                            break
+                        # 面積最大のオブジェクトを選択
+                        if all_objects:
+                            max_obj = max(all_objects, key=lambda x: x[1])
+                            bbox, area, label = max_obj
+                            center = [(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2]
+                            #print(f"最大面積オブジェクト（クラス{label}）: 2D中心={center}, 面積={area}")
+                            objecttheta,objectposition = picam.fc_convert_2dpos_to_3d(center)
+                            objectdist = objectposition[1]**2+objectposition[0]**2+objectposition[2]**2
+                            print(f"最大面積オブジェクト（クラス{label}）: 2D中心={center}, 面積={area}, 角度={objecttheta:.2f}, 距離={objectdist:.2f}m")
+                            if objectdist < 0.05:
+                                slave.set_data(ARM_PITCH2_ANGLE, int(np.clip(-objecttheta*2/4+105,0,180)))
+                                if True:
+                                    #アーム展開
+                                    slave.set_data(ARM_YAW_ANGLE, 40)
+                                    time.sleep(0.5)
+                                    slave.set_data(ARM_PITCH1_ANGLE, 90)
+                                    time.sleep(1)
+                                    slave.set_data(ARM_PITCH1_ANGLE, 180)
+                                    time.sleep(0.3)
+                                    slave.set_data(ARM_YAW_ANGLE, 80)
+                                    time.sleep(1)
+                                    slave.set_data(SUCTION_REF, 0.99)
+                                    time.sleep(1)
+                                    slave.set_data(ARM_YAW_ANGLE, 100)
+                                    time.sleep(0.5)
+                                    slave.set_data(ARM_YAW_ANGLE, 90)
+                                    time.sleep(0.5)
+                                    #アーム収納
+                                    slave.set_data(ARM_PITCH1_ANGLE, 90)
+                                    time.sleep(1)
+                                    slave.set_data(ARM_YAW_ANGLE, 40)
+                                    time.sleep(0.5)
+                                    slave.set_data(ARM_PITCH1_ANGLE, 0)
+                                    time.sleep(0.3)
+                                    slave.set_data(ARM_PITCH2_ANGLE, 105)
+                                    slave.set_data(ARM_YAW_ANGLE, 0)
+                                    time.sleep(1.5)
+                                    slave.set_data(SUCTION_REF, 0.7)
+                                    valid_object_found = True
+                                    break
+                            else:
+                                proceed_length += walk(22.5 if objectdist > 0.1 else 15.0)
+                        else:
+                            print("有効なオブジェクトが見つかりませんでした")
+                            error_count += 1
                     else:
-                        proceed_length += walk(22.5 if objectdist > 0.1 else 15.0)
-                else:
-                    print("有効なオブジェクトが見つかりませんでした")
-            else:
-                print("no detection acquired")
-            time.sleep(0.1)
+                        print("no detection acquired")
+                        error_count += 1
+                    if error_count > 5:
+                        break
+                    time.sleep(0.1)
 
-        proceed_length += walk(-proceed_length)
-        turn_angle += turn(-turn_angle)
+                proceed_length += walk(-proceed_length)
+                turn_angle += turn(-turn_angle)
+                if valid_object_found:
+                    break
+            if valid_object_found:
+                break
+            else:
+                searched_length += walk(15)
+                continue
         #slave.set_data(WALK_ENABLE, False)
         slave.set_data(WALK_ENABLE, True)
         slave.set_data(0x00, 2)

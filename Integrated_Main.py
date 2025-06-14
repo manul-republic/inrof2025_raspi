@@ -597,6 +597,9 @@ if __name__ == "__main__":
         return angle
 
     slave.run()
+    while not slave.get_data(0x44):
+        time.sleep(0.1)
+        print("wait for ping...")
     # slave.set_data(0x00, 0)
     
     ballcount = 0

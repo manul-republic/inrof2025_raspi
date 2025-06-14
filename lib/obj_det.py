@@ -118,7 +118,7 @@ class ObjectDetector:
         padded_img = np.ascontiguousarray(padded_img, dtype=np.float32)
         return padded_img, r
     
-    def _postprocess(self, prediction, scale, num_classes=None, conf_thre=0.7, nms_thre=0.45, class_agnostic=False):
+    def _postprocess(self, prediction, scale, num_classes=None, conf_thre=0.2, nms_thre=0.45, class_agnostic=False):
         # Use self.num_classes if not provided
         if num_classes is None:
             num_classes = self.num_classes

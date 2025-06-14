@@ -22,6 +22,7 @@ class SlaveUART:
         self.memory[14] = 30
         self.memory[15:19] = bytearray(pack("<f", 0.0))
         print(self.memory[13])
+        self.memory[68] = False
 
         self.memory_proto = {
             0x00: {"length": 1, "format": "<B"},
@@ -34,6 +35,7 @@ class SlaveUART:
             0x0d: {"length": 1, "format": "<B"},
             0x0e: {"length": 1, "format": "<B"},
             0x0f: {"length": 4, "format": "<f"},
+            0x44: {"length": 1, "format": "<?"},
         }
 
     def _checksum(self, data):
@@ -150,6 +152,7 @@ class SlaveUART:
 
     def _respond_status_packet(self, id):
         self.send_packet(id, 0x00, None)
+        self.set_data(0x44, True)  # modified: receive ping to start robot
 
     def run(self):
         print(f"SLAVE (ID={self.id}) start")

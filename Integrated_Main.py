@@ -141,8 +141,8 @@ class LineTracer:
     def __init__(
         self, slave, camera, 
         angle_threshold=3000, 
-        position_threshold=100, 
-        frame_check_count=20, 
+        position_threshold=300, 
+        frame_check_count=40, 
         debug_stream_enabled=False,
         mode="forward",
         end_condition="hline_count",
@@ -511,7 +511,7 @@ class LineTracer:
         #     else:
         #         v = max_linear_speed
         if self.mode == "forward":
-            max_linear_speed = 20
+            max_linear_speed = 30
             if not(w == 0):
                 v = 0.0
             else:
@@ -574,7 +574,7 @@ if __name__ == "__main__":
         slave.set_data(WALK_ENABLE, True)
         slave.set_data(OBJ_SPEED, vel)
         slave.set_data(TURN_OBJ_SPEED, 0)
-        time.sleep((length / vel) if vel > 0 else (length / vel / 4))
+        time.sleep((0.5 + length / vel) if vel > 0 else (length / vel / 2))
         slave.set_data(OBJ_SPEED, 0)
         slave.set_data(WALK_ENABLE, False)
         time.sleep(0.5)
@@ -613,7 +613,8 @@ if __name__ == "__main__":
     time.sleep(0.2)
     slave.set_data(SERVO_ENABLE, True) #servo on
     time.sleep(3)
-    slave.set_data(SUCTION_REF, 8.0)
+    slave.set_data(SUCTION_REF, 1.0)
+    time.sleep(1)
     slave.set_data(ARM_PITCH2_ANGLE, 145)
     #アーム展開
     slave.set_data(ARM_YAW_ANGLE, 40)
@@ -636,6 +637,7 @@ if __name__ == "__main__":
     time.sleep(0.3)
     slave.set_data(ARM_PITCH2_ANGLE, 105)
     slave.set_data(ARM_YAW_ANGLE, 0)
+    walk(120)
 
     while True:
         # continue
@@ -649,7 +651,8 @@ if __name__ == "__main__":
         lt = LineTracer(
             slave, cam, debug_stream_enabled=False, 
             mode="forward", end_condition="hline_count", 
-            start_hline_count=(0 if ballcount == 0 else 2), 
+            # start_hline_count=(0 if ballcount == 0 else 2), 
+            start_hline_count=2, 
             end_hline_count=5)
         lt.run()
         print("linetracefinished")
@@ -735,7 +738,8 @@ if __name__ == "__main__":
                                     valid_object_found = True
                                     break
                             else:
-                                proceed_length += walk(22.5 if objectdist > 0.1 else 15.0)
+                                # proceed_length += walk(22.5 if objectdist > 0.1 else 15.0)
+                                proceed_length += walk(15.0)
                                 error_count += 1
                         else:
                             print("有効なオブジェクトが見つかりませんでした")
@@ -755,10 +759,11 @@ if __name__ == "__main__":
             if valid_object_found:
                 break
             else:
+                slave.set_data(WALK_ENABLE, True)
                 lt = LineTracer(
                     slave, cam, debug_stream_enabled=False, 
                     mode="forward", end_condition="time", 
-                    end_time=1.0)
+                    end_time=4.0)
                 lt.run()
                 searched_length += 20
                 continue
@@ -772,7 +777,7 @@ if __name__ == "__main__":
         lt = LineTracer(
             slave, cam, debug_stream_enabled=False, 
             mode="backward", end_condition="hline_count", 
-            start_hline_count=7, 
+            start_hline_count=6, 
             end_hline_count=3)
         lt.run()
         walk(-15)

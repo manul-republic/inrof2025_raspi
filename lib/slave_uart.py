@@ -21,7 +21,6 @@ class SlaveUART:
         self.memory[13] = 105 #yaw
         self.memory[14] = 30
         self.memory[15:19] = bytearray(pack("<f", 0.0))
-        self.memory[68] = False
         print(self.memory[13])
 
         self.memory_proto = {
@@ -35,7 +34,6 @@ class SlaveUART:
             0x0d: {"length": 1, "format": "<B"},
             0x0e: {"length": 1, "format": "<B"},
             0x0f: {"length": 4, "format": "<f"},
-            0x44: {"length": 4, "format": "<?"}, #startup
         }
 
     def _checksum(self, data):
@@ -152,7 +150,6 @@ class SlaveUART:
 
     def _respond_status_packet(self, id):
         self.send_packet(id, 0x00, None)
-        self.set_data(0x44, True)
 
     def run(self):
         print(f"SLAVE (ID={self.id}) start")

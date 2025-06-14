@@ -35,6 +35,7 @@ ARM_PITCH2_ANGLE = 0x0d
 HAND_ANGLE = 0x0e
 SUCTION_REF = 0x0f
 
+WAIT_STARTUP = 0x44  # スレーブの起動確認
 
 class PiCamera:
     def __init__(self):
@@ -597,7 +598,7 @@ if __name__ == "__main__":
         return angle
 
     slave.run()
-    while not slave.get_data(0x44):
+    while not slave.get_data(WAIT_STARTUP):
         time.sleep(0.1)
         print("wait for ping...")
     # slave.set_data(0x00, 0)

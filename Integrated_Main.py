@@ -706,7 +706,8 @@ if __name__ == "__main__":
                             objecttheta,objectposition = picam.fc_convert_2dpos_to_3d(center)
                             objectdist = objectposition[1]**2+objectposition[0]**2+objectposition[2]**2
                             print(f"最大面積オブジェクト（クラス{label}）: 2D中心={center}, 面積={area}, 角度={objecttheta:.2f}, 距離={objectdist:.2f}m")
-                            if objectdist < 0.05:
+                            # if objectdist < 0.05:
+                            if True:
                                 slave.set_data(ARM_PITCH2_ANGLE, int(np.clip(-objecttheta*2/4+105,0,180)))
                                 if True:
                                     #アーム展開
@@ -719,11 +720,12 @@ if __name__ == "__main__":
                                     slave.set_data(ARM_YAW_ANGLE, 80)
                                     time.sleep(1)
                                     slave.set_data(SUCTION_REF, 0.99)
-                                    time.sleep(1)
+                                    time.sleep(2.0)
                                     slave.set_data(ARM_YAW_ANGLE, 100)
-                                    time.sleep(0.5)
+                                    time.sleep(2.0)
                                     slave.set_data(ARM_YAW_ANGLE, 90)
-                                    time.sleep(0.5)
+                                    time.sleep(2.0)
+                                    # walk(30)
                                     #アーム収納
                                     slave.set_data(ARM_PITCH1_ANGLE, 90)
                                     time.sleep(1)
@@ -735,6 +737,7 @@ if __name__ == "__main__":
                                     slave.set_data(ARM_YAW_ANGLE, 0)
                                     time.sleep(1.5)
                                     slave.set_data(SUCTION_REF, 0.7)
+                                    # walk(-30)
                                     valid_object_found = True
                                     break
                             else:

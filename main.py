@@ -60,7 +60,7 @@ class LineTracer:
         self.slave = slave
         self.debug_stream_enabled = debug_stream_enabled # Initialize debug_stream_enabled
 
-        self.enabled = True
+        self.line_lock = Lock()
         self.detected_vlines = []
         self.detected_hlines = []
         self.vline_current = None
@@ -71,16 +71,14 @@ class LineTracer:
         self.position_threshold = position_threshold  # Position difference threshold in pixels
         self.frame_check_count = frame_check_count  # Number of frames to check for line identity
 
-        self.tasks = ["linetrace", "count_vlines"] # "linetrace", "count_vlines"
-        self.behavior = "goahead" #goahead, turn, stop
         self.mode = "forward" #forward, backward
-        self.position = 0  
         # Position IDs
         # 0: start
         # 2: red_goal(line2)
         # 3: yellow_goal(line3)
         # 4: blue_goal(line4)
         # 5: object_zone(line5)
+        # 6: object_zone~
 
     def get_binary_image(self, debug=True):
         img = self.camera.get_line_camera()
@@ -94,64 +92,48 @@ class LineTracer:
     
     def set_position(self, position):
         self.position = position
+    
+    def _detect_loop(self):
+        if self.debug_stream_enabled: # Conditional call
+            threading.Thread(target=run_webserver, daemon=True).start()
+        while True:
+            with self.line_lock:
+                gray, debug_img = self.get_binary_image(debug=self.debug_stream_enabled)
+                self.detect_vertical_line(gray, debug_img)
+                self.detect_horizontal_line(gray, debug_img)
+            if self.debug_stream_enabled and debug_img is not None: # Conditional call
+                update_debug_frame(debug_img)
+            time.sleep(0.02)
 
-    async def goto(self, target_position):
-        self.detected_hlines = []  # Reset detected horizontal lines
-        self.detected_vlines = []  # Reset detected vertical lines
-        self.hlines_crossed_count = 0  # Reset horizontal line crossed count
-        self.hlines_current = {}
-
-        if target_position == self.position:
+    async def goto(self, current_position, target_position, already_crossing=True):
+        print(f"[DEBUG] goto position {current_position} to {target_position}")
+        need_to_cross_count = abs(target_position - current_position) if already_crossing else abs(target_position - current_position) + 1
+        if target_position == current_position:
             print(f"[DEBUG] Already at target position {target_position}. No action taken.")
             return
-        elif target_position < self.position:
-            print(f"[DEBUG] Moving backward to position {target_position}.")
+        elif target_position < current_position:
+            print(f"[DEBUG] Moving backward from {current_position} to {target_position}.")
             self.slave.set_data(CURRENT_MODE, 2)
             self.mode = "backward"
         else:
-            print(f"[DEBUG] Moving forward to position {target_position}.")
+            print(f"[DEBUG] Moving forward from {current_position} to {target_position}.")
             self.slave.set_data(CURRENT_MODE, 0)
             self.mode = "forward"
-        
+
+        hline_crossed = 0
+        with self.line_lock:
+            hline_crossed_prev = self.hlines_crossed_count
+
         while True:
-            gray, debug_img = self.get_binary_image(debug=False)
-            self.detect_vertical_line(gray, debug_img)
-            self.detect_horizontal_line(gray, debug_img)
-            self.update()
-            if self.position == target_position:
+            with self.line_lock:
+                self.update()
+                if hline_crossed_prev < self.hlines_crossed_count:
+                    hline_crossed += 1
+            
+            if need_to_cross_count == hline_crossed:
                 print(f"[DEBUG] Reached target position {target_position}.")
                 break
-            #self.command()
-            if self.debug_stream_enabled and debug_img is not None: # Conditional call
-                update_debug_frame(debug_img)
-            await asyncio.sleep(0.02)  # Adjusted sleep time for asyncio
-
-    # 横棒の数は常に監視しておく
-    def _loop(self):
-        if self.debug_stream_enabled: # Conditional call
-            threading.Thread(target=run_webserver, daemon=True).start()
-        loop_start = time.time()
-        while True:
-            img = self.camera.get_line_camera()
-            #debug_img = None
-            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            gray = cv2.GaussianBlur(gray,(3,3),0)
-            gray = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 15, 10)
-            #debug_img = gray.copy()
-            debug_img = img.copy()
-
-            self.detect_vertical_line(gray, debug_img)
-            self.detect_horizontal_line(gray, debug_img)
-            self.command()
-            if self.debug_stream_enabled and debug_img is not None: # Conditional call
-                update_debug_frame(debug_img)
-
-            # デバッグ出力: ループ時間とライン数
-            loop_time = (time.time() - loop_start) * 1000  # ms
-            loop_start = time.time()
-            #これまでにIDを取得した横棒の数
-
-            time.sleep(0.012)
+            await asyncio.sleep(0.01)  # Adjusted sleep time for asyncio
 
     def detect_vertical_line(self, gray, debug_img=None):
         size = (int(self.camera.width * 0.8), 20)
@@ -323,11 +305,7 @@ class LineTracer:
         
         # Increment the count for uniquely recognized horizontal lines
         self.hlines_crossed_count += 1
-        if self.mode == "backward":
-            self.position -= 1
-        elif self.mode == "forward":
-            self.position += 1
-        print(f"[DEBUG] Total unique horizontal lines counted: {self.hlines_crossed_count}")
+        print(f"[DEBUG] New hline counted. Total: {self.hlines_crossed_count}")
         return uuid.uuid1()        
 
     def debug_draw_line(self, lines, img):
@@ -418,7 +396,7 @@ class LineTracer:
         elif self.mode == "forward":
             v = 25.0
         elif self.mode == "backward":
-            v = -25.0
+            v = -20.0
         self.set_command_velocity(v, w)
 
     def command(self):
@@ -472,11 +450,10 @@ class LineTracer:
         self.set_command_velocity(v, w)
 
         #if self.point_to_line_distance(320, 240, self.vline_current) > 30 or 
-            
 
     def run(self):
         print(f"LineTracer start")
-        threading.Thread(target=self._loop, daemon=True).start()
+        threading.Thread(target=self._detect_loop, daemon=True).start()
 
 
 import asyncio
@@ -501,7 +478,7 @@ class DecisionMaker:
         
     async def _main(self):
         await self.launch()
-        await self.goto_object_zone()
+        await self.lt.goto(0, 5) # goto object zone
         while True:
             object = await self.search_object()
             match object[0]: #class id
@@ -516,8 +493,8 @@ class DecisionMaker:
                     await self.catch_ball_or_can(object[1:])
                 case _:
                     print("No object found, searching again")
-            self.bring_object_to_goal(object[0])
-            await self.goto_object_zone()
+            current_pos = self.bring_object_to_goal(object[0])
+            await self.lt.goto(current_pos, 5) # return to object zone
     
     async def launch(self):
         print("launch phase: 自由ボール捨てる")
@@ -616,10 +593,6 @@ class DecisionMaker:
                     print(f"オブジェクト認識成功: クラス={label}, 角度={theta:.2f}, 位置={position}")
                     return label, theta, position
         return None
-
-    async def goto_object_zone(self):
-        print("goto_object_zone phase: オブジェクトゾーンへ移動")
-        await self.lt.goto(5)
     
     async def bring_object_to_goal(self, class_id):
         print(f"bring_object_to_goal phase: オブジェクトをゴールへ持っていく (クラスID: {class_id})")
@@ -627,21 +600,26 @@ class DecisionMaker:
         await self.turn(-self.search_pos[1])
         await self.walk(10 - self.search_pos[0])
         self.search_pos[1] = 0; self.search_pos[2] = 0
-
+        goal_pos = None
         #start linetrace
         match class_id: #class id
             case 0: # red ball
-                await self.lt.goto(2)
+                goal_pos = 2
+                await self.lt.goto(6, 2)
                 await self.release_ball_or_can()
             case 1: # blue ball
-                await self.lt.goto(4)
+                goal_pos = 4
+                await self.lt.goto(6, 4)
                 await self.release_ball_or_can()
             case 3: # yellow can
-                await self.lt.goto(3)
+                goal_pos = 3
+                await self.lt.goto(6, 3)
                 await self.release_ball_or_can()
             case _:
                 # other object detected.
+                print("other object detected.")
                 pass
+        return goal_pos
         
     async def walk(self, length, vel=15):
         if length == 0:
@@ -744,5 +722,6 @@ if __name__ == "__main__":
     picam.run()
     objdet = ObjectDetector("/home/teba/Programs/inrof2025/python/lib/masters.onnx")
     lt = LineTracer(slave, cam, debug_stream_enabled=False)
+    lt.run()
     dm = DecisionMaker(slave, objdet, cam, picam, lt, time_limit=300)
     dm.run()
